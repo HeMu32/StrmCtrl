@@ -1,0 +1,69 @@
+# Build directories
+/build/
+/cmake-build-*/
+/*-build/
+
+# CMake files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CMakeLists.txt.user
+Testing/
+CTestTestfile.cmake
+install_manifest.txt
+
+# Generated compilation database
+compile_commands.json
+
+# Visual Studio
+.vs/
+*.sln
+*.vcxproj*
+
+# JetBrains
+.idea/
+*.iml
+
+# MinGW / GCC / MSYS artifacts
+*.o
+*.obj
+*.lo
+*.lai
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exe
+*.out
+*.app
+*.pch
+
+# Editor backups and temp files
+*~
+*.swp
+*.swo
+*.tmp
+*.log
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
+
+# Coverage and test results
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# Third-party build artifacts (keep sources / submodules)
+/3rdparty/*/build/
+/3rdparty/*/cmake-build-*/
+
+# User-specific CMake presets
+CMakeUserPresets.json
+
+# Other
+dist/
+bin/
+obj/
