@@ -14,6 +14,7 @@ install_manifest.txt
 
 # Generated compilation database
 compile_commands.json
+/.vscode/launch.json
 
 # Visual Studio
 .vs/

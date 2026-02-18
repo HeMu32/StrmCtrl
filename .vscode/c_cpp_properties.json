@@ -1,0 +1,17 @@
+{
+  "configurations": [
+    {
+      "name": "MinGW",
+      "compilerPath": "C:\\MinGW\\bin\\g++.exe",
+      "intelliSenseMode": "windows-gcc-x64",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/3rdparty/IXWebSocket/ixwebsocket"
+      ],
+      "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+    }
+  ],
+  "version": 4
+}
