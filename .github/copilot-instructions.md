@@ -4,8 +4,9 @@
 
 - 项目类型：C++17 + CMake（Windows / MinGW-w64 优先）。主目录 CMake 文件：`CMakeLists.txt`。
 - 主要组件：
-  - `demo/`：示例程序（`demo_master` = WebSocket 服务器，`demo_slave` = WebSocket 客户端）。
-    - 关键文件：`demo/master.cpp`、`demo/slave.cpp`、`demo/commons.h`、`demo/CMakeLists.txt`。
+  - `include/strmctrl/` + `src/`：核心库，提供主端/从端与 RTP 视频能力。
+  - `demo/`：示例程序（保留 `demo_master`/`demo_slave` 作为 IXWebSocket 验证；新增 `stream_master`/`stream_slave` 展示视频推流）。
+    - 关键文件：`demo/stream_master.cpp`、`demo/stream_slave.cpp`、`demo/CMakeLists.txt`。
   - `3rdparty/IXWebSocket`：已作为 git submodule 引入，提供 WebSocket 实现（不要修改子模块源，除非明确提交子模块更新）。
 
 重要架构/模式（必读）
@@ -14,6 +15,11 @@
 - 在 Windows 上需调用 `ix::initNetSystem()` / `ix::uninitNetSystem()`（见两个 demo）。
 - `WebSocketServer::setOnConnectionCallback` 的第一个参数为 `std::weak_ptr<ix::WebSocket>`；在回调中请先 `lock()` 再使用（见 `demo/master.cpp`）。
 - 消息处理回调接收 `ix::WebSocketMessagePtr`：检查 `msg->type`（Message/Open/Close/Error）并使用 `msg->str` / `msg->errorInfo`。
+- **视频数据流（stream_slave）**：目前的 `stream_slave` 是**Headless（无头）**的。
+  - 收到 RTP 包 -> `StrmCtrl` 内部解码 -> 调用 `MessageCallbacks::on_frame`。
+  - `on_frame` 回调接收 `const strmctrl::VideoFrame&`（包含 YUV 数据指针）。
+  - 当前 demo 仅在控制台打印帧信息（宽/高/PTS），**不进行图形渲染**。
+  - 若需渲染，需引入 SDL2/Qt/OpenCV 等外部库并在回调中处理。
 
 构建与运行（开发者常用命令）
 - 初始化仓库与子模块：
@@ -21,7 +27,37 @@
 - 用 MinGW 生成并构建（Windows 示例）：
   - cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
   - cmake --build build --config Release -j 4
-- 运行 demo：在两个终端分别运行 `build/demo/demo_master.exe`、`build/demo/demo_slave.exe`。在控制台输入文本并回车发送；输入 `quit` 停止。
+  - *注：若 CMake 自动找到 FFmpeg，则会构建 `stream_master`/`stream_slave`；否则仅构建基础 demo。*
+- 运行 demo：
+  - WebSocket 验证：`build/demo/demo_master.exe` & `build/demo/demo_slave.exe`
+  - 视频推流（需 FFmpeg）：`build/demo/stream_master.exe <ip> <file>` & `build/demo/stream_slave.exe`
+
+补充 — 指定 FFmpeg 路径（若自动查找失败）
+- 本仓库可使用仓库内捆绑的 FFmpeg（位于 `3rdparty/ffmpeg`）。若存在该目录，CMake 会自动优先使用它。
+- 在 MinGW/PowerShell 中构建（Windows 示例）：
+- 配置：
+    ```
+    # If the repository includes a bundled FFmpeg under 3rdparty/ffmpeg,
+    # CMake will now automatically use it. You only need to pass
+    # -DFFMPEG_ROOT when you want to override or specify a different
+    # FFmpeg installation.
+    cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+    ```
+    (PowerShell example)
+    ```
+    cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+    ```
+  - 构建：
+    ```
+    cmake --build build --config Release -j 4
+    ```
+- 运行 demo 前需确保 FFmpeg 的运行时 DLL 可被加载（将 `3rdparty/ffmpeg/bin` 下的 `.dll` 复制到 `build/demo/`，或把该目录加入 PATH）。
+- 运行 streaming demo：
+  - Master (推流)：`build/demo/stream_master.exe <peer_ip> <input_file>`
+  - Slave  (拉流)：`build/demo/stream_slave.exe <master_ip>`
+- 若 CMake 找不到 FFmpeg，使用 `-DFFMPEG_ROOT=...` 指定路径，或设置 `FFMPEG_INCLUDE_DIR` / `FFMPEG_LIB_DIR` 环境变量。
+ - 若 CMake 找不到 FFmpeg 或你想使用其他位置的 FFmpeg，请传 `-DFFMPEG_ROOT=...` 指定路径，或设置 `FFMPEG_INCLUDE_DIR` / `FFMPEG_LIB_DIR` 环境变量。
+  - 注意：如果未找到 FFmpeg 的运行时库（libavcodec/libavformat/libavutil），CMake 将跳过 `strmctrl` 库和依赖于它的 `stream_master`/`stream_slave` demo；基础的 `demo_master`/`demo_slave`（IXWebSocket 验证）仍然会被构建。
 
 编辑器 / IDE 设置（解决头文件被标红）
 - 本仓库已开启 `compile_commands.json` 导出（顶层 CMake 已设置 `CMAKE_EXPORT_COMPILE_COMMANDS ON`），并在构建时自动复制到项目根目录。
@@ -49,7 +85,8 @@
 - 保持 `commons.h` 的接口不破坏（它是多个 demo 的共享配置点）。
 
 补充说明
-- 本仓库当前没有 FFmpeg / 音视频解码集成（若添加，请注意许可和动态链接策略）。
+- 本仓库已集成 FFmpeg 动态链接（MinGW-w64）。FFmpeg 需为 shared build，并通过 `FFMPEG_ROOT`/`FFMPEG_INCLUDE_DIR`/`FFMPEG_LIB_DIR` 指定路径（或设置同名环境变量）。
+- demo 运行时需保证 FFmpeg DLL 可被加载（例如将 DLL 放入可执行文件同目录，或在 PATH 中）。
 - 没有自动测试框架；新增功能请同时添加简单运行说明到 `README.md` 或 `demo/` 下的说明文件。
 
 FFmpeg — 运行时合规检测（建议）

@@ -1,1 +1,1 @@
-Place your ffmpeg headers here
+Place your ffmpeg "include" and "lib" folders here

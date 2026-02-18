@@ -68,3 +68,6 @@ CMakeUserPresets.json
 dist/
 bin/
 obj/
+
+/.cache/
+/3rdparty/ffmpeg/

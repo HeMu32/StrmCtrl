@@ -8,7 +8,10 @@
       "cppStandard": "c++17",
       "includePath": [
         "${workspaceFolder}/**",
-        "${workspaceFolder}/3rdparty/IXWebSocket/ixwebsocket"
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/3rdparty/IXWebSocket/ixwebsocket",
+        "${workspaceFolder}/3rdparty/ffmpeg/include",
+        "${workspaceFolder}/3rdparty/ffmpeg/include/**"
       ],
       "compileCommands": "${workspaceFolder}/build/compile_commands.json"
     }
