@@ -15,6 +15,7 @@ install_manifest.txt
 # Generated compilation database
 compile_commands.json
 /.vscode/launch.json
+/.cache/
 
 # Visual Studio
 .vs/
@@ -60,6 +61,8 @@ coverage/
 # Third-party build artifacts (keep sources / submodules)
 /3rdparty/*/build/
 /3rdparty/*/cmake-build-*/
+
+/3rdparty/ffmpeg/
 
 # User-specific CMake presets
 CMakeUserPresets.json
