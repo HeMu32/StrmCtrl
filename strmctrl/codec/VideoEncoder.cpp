@@ -147,6 +147,14 @@ bool VideoEncoder::encode(AVFrame* frame)
             return false;
         }
 
+        // 必须调用 av_frame_make_writable 确保 sws_frame_ 的 buffer 是可写的
+        // 否则在多次调用 sws_scale 时，如果底层 buffer 被编码器引用，会导致崩溃或数据损坏
+        int ret = av_frame_make_writable(sws_frame_);
+        if (ret < 0) {
+            last_error_ = "av_frame_make_writable failed: " + avErrStr(ret);
+            return false;
+        }
+
         sws_scale(sws_ctx_,
                   frame->data, frame->linesize, 0, frame->height,
                   sws_frame_->data, sws_frame_->linesize);
@@ -226,10 +234,9 @@ bool VideoEncoder::ensureSwsContext(int src_w, int src_h, AVPixelFormat src_fmt)
     sws_frame_->width  = cfg_.width;
     sws_frame_->height = cfg_.height;
 
-    int ret = av_image_alloc(sws_frame_->data, sws_frame_->linesize,
-                             cfg_.width, cfg_.height, cfg_.pixel_format, 32);
+    int ret = av_frame_get_buffer(sws_frame_, 32);
     if (ret < 0) {
-        last_error_ = "av_image_alloc (sws) failed: " + avErrStr(ret);
+        last_error_ = "av_frame_get_buffer (sws) failed: " + avErrStr(ret);
         av_frame_free(&sws_frame_);
         sws_freeContext(sws_ctx_);
         sws_ctx_ = nullptr;

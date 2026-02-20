@@ -25,6 +25,9 @@
 #include <atomic>
 #include <mutex>
 
+#include <cerrno>
+const int FFMPEG_EAGAIN = EAGAIN;
+
 #include <ixwebsocket/IXNetSystem.h>
 
 #include "strmctrl/Master.h"
@@ -140,7 +143,7 @@ public:
                 // 解码器已排空
                 break; 
             }
-            if (ret != AVERROR(EAGAIN)) {
+            if (ret != AVERROR(FFMPEG_EAGAIN)) {
                 // 真正的解码错误
                 err_ = "avcodec_receive_frame: " + avErr(ret);
                 break;
@@ -163,7 +166,7 @@ public:
             // 3. 只处理视频流
             if (pkt->stream_index == video_idx_) {
                 ret = avcodec_send_packet(dec_ctx_, pkt);
-                if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+                if (ret < 0 && ret != AVERROR(FFMPEG_EAGAIN) && ret != AVERROR_EOF) {
                     err_ = "avcodec_send_packet: " + avErr(ret);
                     av_packet_unref(pkt);
                     break;

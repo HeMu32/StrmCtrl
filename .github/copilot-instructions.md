@@ -308,11 +308,5 @@ Print a clear error and exit (or disable affected features) if the check returns
 
 ## Known Issues
 
-### `stream_master` Looping Instability
-The `stream_master` demo with `--loop` flag exhibits unstable behavior on some environments.
-Symptoms:
-- Repeated "Reopen OK" followed by "Resource temporarily unavailable".
-- Rapid infinite looping with no frames sent.
-- EOF handling logic interactions with `avcodec_receive_frame` / `av_read_frame` are suspect.
-- **Status**: Unresolved. Do not assert a specific cause without further evidence.
+*(Currently no known critical issues. The previous `stream_master` looping instability and `libopenh264` encoding failures have been resolved.)*
 ```

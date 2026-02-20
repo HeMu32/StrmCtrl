@@ -107,6 +107,8 @@ private:
     AVFormatContext* fmt_ctx_   = nullptr;
     AVStream*        stream_    = nullptr;
     int64_t          pkt_index_ = 0;      ///< 单调递增的包序号（用于 dts/pts 推算）
+    AVRational       enc_time_base_ = {1, 90000}; ///< 编码器时间基
+    int64_t          last_dts_  = AV_NOPTS_VALUE; ///< 记录上一个发送的 dts，确保单调递增
 
     std::string last_error_;
 };

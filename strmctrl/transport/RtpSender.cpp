@@ -70,6 +70,7 @@ bool RtpSender::open(const std::string&    dest_host,
     }
 
     stream_->time_base = codec_ctx->time_base;
+    enc_time_base_ = codec_ctx->time_base;
 
     // 打开 UDP 输出 IO
     ret = avio_open(&fmt_ctx_->pb, url.c_str(), AVIO_FLAG_WRITE);
@@ -91,6 +92,7 @@ bool RtpSender::open(const std::string&    dest_host,
     }
 
     pkt_index_ = 0;
+    last_dts_ = AV_NOPTS_VALUE;
     return true;
 }
 
@@ -133,7 +135,16 @@ bool RtpSender::sendPacket(AVPacket* pkt)
     ++pkt_index_;
 
     // 将 pts/dts 从编码器时间基转换到流时间基
-    av_packet_rescale_ts(out, { 1, stream_->time_base.den }, stream_->time_base);
+    av_packet_rescale_ts(out, enc_time_base_, stream_->time_base);
+
+    // 确保 dts 单调递增，防止 av_interleaved_write_frame 报错
+    if (last_dts_ != AV_NOPTS_VALUE && out->dts <= last_dts_) {
+        out->dts = last_dts_ + 1;
+        if (out->pts < out->dts) {
+            out->pts = out->dts;
+        }
+    }
+    last_dts_ = out->dts;
 
     int ret = av_interleaved_write_frame(fmt_ctx_, out);
     av_packet_free(&out);
