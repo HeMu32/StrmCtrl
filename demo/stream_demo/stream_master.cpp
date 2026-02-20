@@ -229,7 +229,9 @@ int main(int argc, char* argv[])
     strmctrl::Master master;
     master.setSignalingPort(sig_port);
     master.setRtpPort(rtp_port);
-    master.setCodecConfig(strmctrl::CodecConfig::makeOpenH264(1280, 720, 30, 2000));
+    // keep a local copy of the codec config so demo logging can show encoder target
+    auto codec_cfg = strmctrl::CodecConfig::makeOpenH264(1280, 720, 30, 2000);
+    master.setCodecConfig(codec_cfg);
 
     master.setMessageCallback([](const strmctrl::TextMessage& msg) {
         std::cout << "[Slave " << msg.sender_id << "] " << msg.text << "\n";
@@ -286,7 +288,13 @@ int main(int argc, char* argv[])
         return 1;
     }
     std::cout << "[Master] Streaming: " << video_path
-              << " @ " << src.fps() << " fps\n"
+              << " @ " << src.fps() << " fps"
+              << " | encoder_out=" << codec_cfg.width << "x" << codec_cfg.height;
+
+    // Also print source resolution (if available) to avoid ambiguity between source
+    // frame size and encoder output size shown later when the first frame is pushed.
+    if (src.fps() > 0.0) std::cout << " | source_fps=" << src.fps();
+    std::cout << "\n"
               << "[Master] Type a message and press Enter to send; 'quit' to exit.\n";
 
     // -----------------------------------------------------------------------
@@ -329,9 +337,11 @@ int main(int argc, char* argv[])
 
             // 首帧确认
             if (frame_count == 1) {
-                std::cout << "[Master] First frame pushed: "
+                std::cout << "[Master] First frame: source="
                           << frame->width << "x" << frame->height
-                          << " fmt=" << frame->format << "\n";
+                          << " fmt=" << frame->format
+                          << " | encoder_out=" << codec_cfg.width << "x" << codec_cfg.height
+                          << "\n";
             }
 
             if (!master.pushVideoFrame(frame)) {

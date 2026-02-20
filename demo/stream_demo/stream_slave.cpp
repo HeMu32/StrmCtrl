@@ -35,7 +35,8 @@
 // ---------------------------------------------------------------------------
 static void printFrameInfo(const strmctrl::VideoFrame& frame)
 {
-    std::cout << "[Slave] Frame: "
+    // make it explicit that the slave is reporting the decoded (encoder-output) frame
+    std::cout << "[Slave] Decoded frame (encoder output): "
               << frame.width() << "x" << frame.height()
               << " pts=" << frame.pts()
               << " fmt=" << static_cast<int>(frame.format())
