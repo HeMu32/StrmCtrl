@@ -33,7 +33,7 @@
 // ---------------------------------------------------------------------------
 // 帧信息打印辅助
 // ---------------------------------------------------------------------------
-static void printFrameInfo(const strmctrl::VideoFrame& frame)
+static void printFrameInfo(const strmctrl::VideoFrame &frame)
 {
     // make it explicit that the slave is reporting the decoded (encoder-output) frame
     std::cout << "[Slave] Decoded frame (encoder output): "
@@ -46,17 +46,18 @@ static void printFrameInfo(const strmctrl::VideoFrame& frame)
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
-    if (argc < 2) {
+    if (argc < 2)
+    {
         std::cerr << "Usage: stream_slave.exe <master_host> "
                      "[signaling_port=11451] [rtp_port=11452]\n";
         return 1;
     }
 
     const std::string master_host = argv[1];
-    const int sig_port  = (argc >= 3) ? std::stoi(argv[2]) : 11451;
-    const int rtp_port  = (argc >= 4) ? std::stoi(argv[3]) : 11452;
+    const int sig_port = (argc >= 3) ? std::stoi(argv[2]) : 11451;
+    const int rtp_port = (argc >= 4) ? std::stoi(argv[3]) : 11452;
 
     // 初始化 Windows 网络
     ix::initNetSystem();
@@ -76,11 +77,11 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     strmctrl::Slave slave;
 
-    slave.setMessageCallback([](const strmctrl::TextMessage& msg) {
-        std::cout << "[Master " << msg.sender_id << "] " << msg.text << "\n";
-    });
+    slave.setMessageCallback([](const strmctrl::TextMessage &msg)
+                             { std::cout << "[Master " << msg.sender_id << "] " << msg.text << "\n"; });
 
-    slave.setConnectionCallback([&](bool connected, const std::string& info) {
+    slave.setConnectionCallback([&](bool connected, const std::string &info)
+                                {
         std::cout << "[Slave] "
                   << (connected ? "Connected to master: " : "Disconnected: ")
                   << info << "\n";
@@ -88,22 +89,22 @@ int main(int argc, char* argv[])
             // master 断开后停止消费循环，让主线程正常退出
             running.store(false);
             queue_cv.notify_all();
-        }
-    });
+        } });
 
     // 视频帧 callback：快速 clone 后入队
     slave.setVideoFrameCallback(
-        [&](const strmctrl::VideoFrame& frame) {
+        [&](const strmctrl::VideoFrame &frame)
+        {
             std::lock_guard<std::mutex> lock(queue_mutex);
             frame_queue.push(frame.clone());
             queue_cv.notify_one();
-        }
-    );
+        });
 
     // -----------------------------------------------------------------------
     // 连接主端
     // -----------------------------------------------------------------------
-    if (!slave.connect(master_host, sig_port, rtp_port)) {
+    if (!slave.connect(master_host, sig_port, rtp_port))
+    {
         std::cerr << "[Slave] connect failed: " << slave.lastError() << "\n";
         ix::uninitNetSystem();
         return 1;
@@ -115,7 +116,8 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // 帧消费线程：从队列取出帧并处理
     // -----------------------------------------------------------------------
-    std::thread consumer_thread([&]() {
+    std::thread consumer_thread([&]()
+                                {
         int64_t frame_count = 0;
         while (running.load()) {
             std::unique_lock<std::mutex> lock(queue_mutex);
@@ -133,38 +135,43 @@ int main(int argc, char* argv[])
 
                 lock.lock();
             }
-        }
-    });
+        } });
 
     // -----------------------------------------------------------------------
     // 控制台输入线程：仅负责发消息，EOF 不影响 slave 生命周期
     // -----------------------------------------------------------------------
     std::atomic_bool stop_input{false};
-    std::thread input_thread([&]() {
-        std::string line;
-        while (!stop_input.load() && std::getline(std::cin, line)) {
-            if (line == "quit") {
-                running.store(false);
-                queue_cv.notify_all();
-                break;
-            }
-            if (!slave.sendMessage(line)) {
-                std::cerr << "[Slave] sendMessage failed: " << slave.lastError() << "\n";
-            }
-        }
-        // stdin EOF 时什么都不做，slave 继续运行
-    });
+    std::thread input_thread([&]()
+                             {
+                                 std::string line;
+                                 while (!stop_input.load() && std::getline(std::cin, line))
+                                 {
+                                     if (line == "quit")
+                                     {
+                                         running.store(false);
+                                         queue_cv.notify_all();
+                                         break;
+                                     }
+                                     if (!slave.sendMessage(line))
+                                     {
+                                         std::cerr << "[Slave] sendMessage failed: " << slave.lastError() << "\n";
+                                     }
+                                 }
+                                 // stdin EOF 时什么都不做，slave 继续运行
+                             });
 
     // -----------------------------------------------------------------------
     // 主线程：等待帧消费线程结束（视频流关闭 / quit）
     // -----------------------------------------------------------------------
-    if (consumer_thread.joinable()) consumer_thread.join();
+    if (consumer_thread.joinable())
+        consumer_thread.join();
 
     // -----------------------------------------------------------------------
     // 清理
     // -----------------------------------------------------------------------
     stop_input.store(true);
-    if (input_thread.joinable()) input_thread.detach();
+    if (input_thread.joinable())
+        input_thread.detach();
 
     slave.disconnect();
     ix::uninitNetSystem();
