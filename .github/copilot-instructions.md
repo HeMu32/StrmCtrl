@@ -260,7 +260,7 @@ Messages sent over the WebSocket signaling channel carry a prefix:
 | 11451 | Signaling | WebSocket (TCP) — Master listens, Slave connects |
 | 11452 | RTP Video | UDP — Master sends, Slave binds to receive |
 | 11453 | RTCP Video | UDP — auto-used by FFmpeg alongside video RTP |
-| 11456 | RTP Audio | UDP — `rtp_port + 4`; Master sends, Slave binds |
+| 11456 | RTP Audio | UDP — `rtp_port + 2`; Master sends, Slave binds |
 | 11457 | RTCP Audio | UDP — auto-used by FFmpeg alongside audio RTP |
 
 **Avoid UDP 5004** on Windows — `wmpnetwk.exe` (Windows Media Player Network Sharing) routinely occupies it, causing `bind failed: WSAEACCES (-10013)` on the Slave side.
