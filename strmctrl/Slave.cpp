@@ -22,7 +22,8 @@ Slave::~Slave()
 // ---------------------------------------------------------------------------
 
 void Slave::setMessageCallback(MessageCallback cb)     { msg_cb_   = std::move(cb); }
-void Slave::setVideoFrameCallback(VideoFrameCallback cb){ frame_cb_ = std::move(cb); }
+void Slave::setVideoFrameCallback(VideoFrameCallback cb){ video_cb_ = std::move(cb); }
+void Slave::setAudioFrameCallback(AudioFrameCallback cb){ audio_cb_ = std::move(cb); }
 void Slave::setConnectionCallback(ConnectionCallback cb){ conn_cb_  = std::move(cb); }
 
 // ---------------------------------------------------------------------------
@@ -45,10 +46,9 @@ bool Slave::connect(const std::string& master_host,
     signaling_->setConnectionCallback(
         [this](bool connected, const std::string& info) {
             if (connected) {
-                // 连接建立后立即向主端请求 SDP
-                // 使用内部 SDP 请求消息（以 SDP: 前缀但内容为 "REQUEST"）
-                signaling_->sendSdp("REQUEST");
-                std::cout << "[Slave] Connected to master, SDP request sent.\n";
+                onConnected();
+            } else {
+                onDisconnected();
             }
             if (conn_cb_) conn_cb_(connected, info);
         }
@@ -66,7 +66,7 @@ bool Slave::connect(const std::string& master_host,
     );
 
     if (!signaling_->start()) {
-        last_error_ = "SignalingChannel::start failed";
+        std::cerr << "SignalingChannel::start failed\n";
         return false;
     }
 
@@ -75,60 +75,72 @@ bool Slave::connect(const std::string& master_host,
 
 void Slave::disconnect()
 {
-    if (receiver_) {
-        receiver_->stop();
-        receiver_.reset();
+    if (rtp_receiver_) {
+        rtp_receiver_->stop();
+        rtp_receiver_.reset();
     }
     if (signaling_) {
         signaling_->stop();
         signaling_.reset();
     }
-}
-
-bool Slave::isConnected() const
-{
-    return signaling_ && signaling_->isConnected();
+    connected_ = false;
 }
 
 // ---------------------------------------------------------------------------
 // 发送
 // ---------------------------------------------------------------------------
 
-bool Slave::sendMessage(const std::string& text)
+void Slave::sendMessage(const std::string& text)
 {
-    if (!signaling_) return false;
-    return signaling_->sendMessage(TextMessage::make(text, "slave"));
+    if (!signaling_) return;
+    signaling_->sendMessage(TextMessage::make(text, "slave"));
 }
 
 // ---------------------------------------------------------------------------
-// 私有
+// 内部回调处理
 // ---------------------------------------------------------------------------
+
+void Slave::onConnected()
+{
+    connected_ = true;
+    // 连接建立后立即向主端请求 SDP
+    signaling_->sendSdp("REQUEST");
+    std::cout << "[Slave] Connected to master, SDP request sent.\n";
+}
+
+void Slave::onDisconnected()
+{
+    connected_ = false;
+    if (rtp_receiver_) {
+        rtp_receiver_->stop();
+        rtp_receiver_.reset();
+    }
+    std::cout << "[Slave] Disconnected from master.\n";
+}
 
 void Slave::onSdpReceived(const std::string& sdp)
 {
-    std::cout << "[Slave] SDP received, initializing RTP receiver...\n";
+    std::cout << "[Slave] Received SDP offer, initializing RTP receiver...\n";
 
-    receiver_ = std::make_unique<RtpReceiver>();
+    rtp_receiver_ = std::make_unique<RtpReceiver>();
 
-    if (frame_cb_) receiver_->setFrameCallback(frame_cb_);
+    if (video_cb_) rtp_receiver_->setVideoFrameCallback(video_cb_);
+    if (audio_cb_) rtp_receiver_->setAudioFrameCallback(audio_cb_);
 
-    receiver_->setErrorCallback([](const std::string& err) {
+    rtp_receiver_->setErrorCallback([](const std::string& err) {
         std::cerr << "[Slave] RtpReceiver error: " << err << "\n";
     });
 
-    if (!receiver_->openWithSdp(sdp)) {
-        last_error_ = "RtpReceiver::openWithSdp failed: " + receiver_->lastError();
-        std::cerr << "[Slave] " << last_error_ << "\n";
-        receiver_.reset();
+    if (!rtp_receiver_->openWithSdp(sdp)) {
+        std::cerr << "[Slave] RtpReceiver::openWithSdp failed: " << rtp_receiver_->lastError() << "\n";
         return;
     }
 
-    receiver_->start();
-    std::cout << "[Slave] RTP receiver started on port " << rtp_port_ << "\n";
+    rtp_receiver_->start();
+    std::cout << "[Slave] RTP receiver started.\n";
 
-    // 通知主端：接收端已就绪，可以开始推流
+    // 通知主端已就绪
     signaling_->sendReady();
-    std::cout << "[Slave] READY sent to master.\n";
 }
 
 } // namespace strmctrl

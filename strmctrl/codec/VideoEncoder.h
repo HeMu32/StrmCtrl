@@ -110,7 +110,7 @@ public:
      * @param frame  原始帧（调用方保留所有权）
      * @return       true 表示帧成功送入编码器；false 表示编码器未打开或内部错误
      */
-    bool encode(AVFrame* frame);
+    bool encode(const AVFrame* frame);
 
     // -----------------------------------------------------------------------
     // 访问器

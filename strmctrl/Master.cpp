@@ -9,7 +9,7 @@ namespace strmctrl {
 // ---------------------------------------------------------------------------
 
 Master::Master()
-    : codec_cfg_(CodecConfig::makeOpenH264())
+    : video_cfg_(CodecConfig::makeOpenH264())
 {}
 
 Master::~Master()
@@ -23,7 +23,8 @@ Master::~Master()
 
 void Master::setSignalingPort(int port)   { signaling_port_ = port; }
 void Master::setRtpPort(int port)         { rtp_port_       = port; }
-void Master::setCodecConfig(const CodecConfig& cfg) { codec_cfg_ = cfg; }
+void Master::setCodecConfig(const CodecConfig& cfg) { video_cfg_ = cfg; }
+void Master::setAudioConfig(const AudioConfig& cfg) { audio_cfg_ = cfg; has_audio_cfg_ = true; }
 
 void Master::setMessageCallback(MessageCallback cb)    { msg_cb_  = std::move(cb); }
 void Master::setConnectionCallback(ConnectionCallback cb) { conn_cb_ = std::move(cb); }
@@ -34,11 +35,22 @@ void Master::setConnectionCallback(ConnectionCallback cb) { conn_cb_ = std::move
 
 bool Master::start()
 {
-    // 初始化编码器
-    encoder_ = std::make_unique<VideoEncoder>(codec_cfg_);
-    if (!encoder_->open()) {
-        last_error_ = "VideoEncoder::open failed: " + encoder_->lastError();
+    if (running_) return false;
+
+    // 初始化视频编码器
+    video_encoder_ = std::make_unique<VideoEncoder>(video_cfg_);
+    if (!video_encoder_->open()) {
+        std::cerr << "VideoEncoder::open failed: " << video_encoder_->lastError() << "\n";
         return false;
+    }
+
+    // 初始化音频编码器（如果配置了）
+    if (has_audio_cfg_) {
+        audio_encoder_ = std::make_unique<AudioEncoder>(audio_cfg_);
+        if (!audio_encoder_->open()) {
+            std::cerr << "AudioEncoder::open failed: " << audio_encoder_->lastError() << "\n";
+            return false;
+        }
     }
 
     // 创建信令通道（服务端模式）
@@ -47,21 +59,31 @@ bool Master::start()
     // 转发用户消息 callback
     if (msg_cb_) signaling_->setMessageCallback(msg_cb_);
 
-    // 连接状态 callback：从端连接时触发 SDP 协商
+    // 内部控制消息 callback
+    signaling_->setSdpCallback([this](const std::string& sdp) {
+        if (sdp == "REQUEST") {
+            onSdpRequest();
+        }
+    });
+
+    signaling_->setReadyCallback([this]() {
+        onReady();
+    });
+
+    // 连接状态 callback
     signaling_->setConnectionCallback(
         [this](bool connected, const std::string& info) {
             if (connected) {
                 onSlaveConnected(info);
             } else {
-                rtp_ready_ = false;
-                slave_host_.clear();
+                onSlaveDisconnected();
             }
             if (conn_cb_) conn_cb_(connected, info);
         }
     );
 
     if (!signaling_->start()) {
-        last_error_ = "SignalingChannel::start failed";
+        std::cerr << "SignalingChannel::start failed\n";
         return false;
     }
 
@@ -74,8 +96,9 @@ void Master::stop()
     if (!running_) return;
     running_ = false;
 
-    if (encoder_) { encoder_->flush(); encoder_->close(); }
-    if (sender_)  sender_->close();
+    if (video_encoder_) { video_encoder_->flush(); video_encoder_->close(); }
+    if (audio_encoder_) { audio_encoder_->flush(); audio_encoder_->close(); }
+    if (rtp_sender_)  rtp_sender_->close();
     if (signaling_) signaling_->stop();
 
     rtp_ready_ = false;
@@ -85,88 +108,117 @@ void Master::stop()
 // 推流 / 发送
 // ---------------------------------------------------------------------------
 
-bool Master::pushVideoFrame(AVFrame* frame)
+void Master::pushVideoFrame(const VideoFrame& frame)
 {
-    if (!encoder_ || !running_) {
-        last_error_ = "Master not running";
-        return false;
-    }
-    if (!rtp_ready_) {
-        // 从端尚未就绪，丢弃该帧（正常情况，无需报错）
-        return true;
-    }
-    bool ok = encoder_->encode(frame);
-    if (!ok) {
-        last_error_ = "encode: " + encoder_->lastError();
-    }
-    return ok;
+    if (!video_encoder_ || !running_ || !rtp_ready_) return;
+    video_encoder_->encode(frame.avFrame());
 }
 
-bool Master::sendMessage(const std::string& text)
+void Master::pushAudioFrame(const AudioFrame& frame)
 {
-    if (!signaling_) return false;
-    return signaling_->sendMessage(TextMessage::make(text, "master"));
+    if (!audio_encoder_ || !running_ || !rtp_ready_) return;
+    audio_encoder_->encode(frame);
+}
+
+void Master::sendMessage(const std::string& text)
+{
+    if (signaling_) signaling_->sendMessage(TextMessage::make(text, "master"));
 }
 
 // ---------------------------------------------------------------------------
-// 访问器
+// 内部回调处理
 // ---------------------------------------------------------------------------
 
-bool Master::hasSlaveConnected() const
+void Master::onSlaveConnected(const std::string& info)
 {
-    return signaling_ && signaling_->isConnected();
+    // info 格式为 "ip:port"（e.g. "127.0.0.1:52390" 或 "[::1]:52390"）
+    // addStream 只需要纯 IP，需要把 :port 部分去掉。
+    if (!info.empty() && info.front() == '[') {
+        // IPv6: "[::1]:52390" → "::1"
+        const auto bracket = info.find(']');
+        current_slave_ip_ = (bracket != std::string::npos)
+            ? info.substr(1, bracket - 1)
+            : info;
+    } else {
+        // IPv4: "127.0.0.1:52390" → "127.0.0.1"
+        const auto colon = info.rfind(':');
+        current_slave_ip_ = (colon != std::string::npos)
+            ? info.substr(0, colon)
+            : info;
+    }
+
+    rtp_ready_ = false;
+    std::cout << "[Master] Slave connected from " << info
+              << " (RTP target: " << current_slave_ip_ << ")\n";
 }
 
-// ---------------------------------------------------------------------------
-// 私有
-// ---------------------------------------------------------------------------
-
-void Master::onSlaveConnected(const std::string& slave_addr)
+void Master::onSlaveDisconnected()
 {
-    // 从 "IP:Port" 中解析出 IP
-    const auto colon = slave_addr.rfind(':');
-    slave_host_ = (colon != std::string::npos)
-                ? slave_addr.substr(0, colon)
-                : slave_addr;
+    current_slave_ip_.clear();
+    rtp_ready_ = false;
+    if (rtp_sender_) {
+        rtp_sender_->close();
+        rtp_sender_.reset();
+    }
+    std::cout << "[Master] Slave disconnected\n";
+}
 
-    // 初始化 RtpSender，绑定到从端的 RTP 端口
-    sender_ = std::make_unique<RtpSender>();
-    if (!sender_->open(slave_host_, rtp_port_, encoder_->codecContext())) {
-        last_error_ = "RtpSender::open failed: " + sender_->lastError();
-        std::cerr << "[Master] " << last_error_ << "\n";
+void Master::onSdpRequest()
+{
+    std::cout << "[Master] Received SDP:REQUEST, preparing RTP sender...\n";
+
+    rtp_sender_ = std::make_unique<RtpSender>();
+    // 同机调试时，显式给发送端分配远离接收端口的本地端口，避免 bind 冲突。
+    // 例如 rtp_port_=11452 时，本地发送端从 11552 开始分配：
+    //   流0: 11552/11553, 流1: 11554/11555 ...
+    rtp_sender_->setLocalPortBase(rtp_port_ + 100);
+
+    int v_idx = rtp_sender_->addStream(current_slave_ip_, rtp_port_, video_encoder_->codecContext());
+    if (v_idx < 0) {
+        std::cerr << "[Master] Failed to add video stream to RtpSender\n";
         return;
     }
 
-    // 将编码器输出绑定到 sender
-    bindEncoderToSender();
-
-    // 生成 SDP 并通过信令通道发送给从端
-    const std::string sdp = sender_->generateSdp();
-    if (!signaling_->sendSdp(sdp)) {
-        std::cerr << "[Master] Failed to send SDP to slave\n";
-        return;
-    }
-    std::cout << "[Master] SDP sent to slave at " << slave_host_ << "\n";
-
-    // 注册 READY 回调：从端就绪后才开放推流
-    signaling_->setReadyCallback([this]() {
-        rtp_ready_ = true;
-        std::cout << "[Master] Slave READY - starting RTP stream.\n";
-    });
-}
-
-void Master::bindEncoderToSender()
-{
-    encoder_->setPacketCallback(
-        [this](AVPacket* pkt) {
-            if (sender_ && rtp_ready_) {
-                if (!sender_->sendPacket(pkt)) {
-                    std::cerr << "[Master] RtpSender error: "
-                              << sender_->lastError() << "\n";
-                }
-            }
+    int a_idx = -1;
+    if (audio_encoder_) {
+        // 音频 RTP 用 rtp_port_ + 2，为视频 RTP/RTCP(+0/+1) 和音频 RTCP(+3) 留出空间
+        a_idx = rtp_sender_->addStream(current_slave_ip_, rtp_port_ + 2, audio_encoder_->codecContext());
+        if (a_idx < 0) {
+            std::cerr << "[Master] Failed to add audio stream to RtpSender\n";
+            return;
         }
-    );
+    }
+
+    if (!rtp_sender_->open()) {
+        std::cerr << "[Master] RtpSender::open failed: " << rtp_sender_->lastError() << "\n";
+        return;
+    }
+
+    // 绑定编码器输出到发送器
+    video_encoder_->setPacketCallback([this, v_idx](AVPacket* pkt) {
+        rtp_sender_->sendPacket(pkt, v_idx);
+    });
+
+    if (audio_encoder_) {
+        audio_encoder_->setPacketCallback([this, a_idx](AVPacket* pkt) {
+            rtp_sender_->sendPacket(pkt, a_idx);
+        });
+    }
+
+    std::string sdp = rtp_sender_->generateSdp();
+    if (sdp.empty()) {
+        std::cerr << "[Master] Failed to generate SDP\n";
+        return;
+    }
+
+    signaling_->sendSdp(sdp);
+    std::cout << "[Master] Sent SDP offer to slave\n";
+}
+
+void Master::onReady()
+{
+    std::cout << "[Master] Received READY, starting RTP stream...\n";
+    rtp_ready_ = true;
 }
 
 } // namespace strmctrl

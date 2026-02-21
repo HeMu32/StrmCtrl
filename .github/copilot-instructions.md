@@ -4,7 +4,7 @@
 ## Project Overview
 
 C++17 static library (`strmctrl`) + demo programs.  
-Provides **bidirectional text messaging** (WebSocket/IXWebSocket) and **one-way RTP video streaming** (FFmpeg) between a **Master** node (server / sender) and one or more **Slave** nodes (client / receiver) on a LAN.  
+Provides **bidirectional text messaging** (WebSocket/IXWebSocket) and **one-way RTP audio+video streaming** (FFmpeg) between a **Master** node (server / sender) and one or more **Slave** nodes (client / receiver) on a LAN.  
 Build system: CMake + MinGW-w64 on Windows.
 
 ---
@@ -16,24 +16,28 @@ strmctrl/                    # Core library  (BUILD TARGET: strmctrl, STATIC)
   core/
     Message.h                #   TextMessage struct + factory
     VideoFrame.h             #   RAII AVFrame* wrapper (move-only, .clone())
-    Callbacks.h              #   MessageCallback / VideoFrameCallback / ConnectionCallback
+    AudioFrame.h             #   RAII AVFrame* wrapper for audio (move-only, .clone())
+    Callbacks.h              #   MessageCallback / VideoFrameCallback / AudioFrameCallback / ConnectionCallback
   codec/
-    CodecConfig.h            #   Encoder params; makeOpenH264() factory
+    CodecConfig.h            #   Video encoder params; makeOpenH264() factory
+    AudioConfig.h            #   Audio encoder params; makeAAC() factory
     VideoEncoder.h/.cpp      #   FFmpeg encode + swscale; PacketCallback per encoded pkt
     VideoDecoder.h/.cpp      #   FFmpeg decode; openWithParameters(AVCodecParameters*)
+    AudioEncoder.h/.cpp      #   FFmpeg AAC encode; AVAudioFifo + SwrContext inside
+    AudioDecoder.h/.cpp      #   FFmpeg audio decode; openWithParameters(AVCodecParameters*)
   transport/
-    SignalingChannel.h/.cpp  #   WebSocket server (Master) or client (Slave); MSG:/SDP: dispatch
-    RtpSender.h/.cpp         #   avformat rtp:// output; av_sdp_create() SDP generation
-    RtpReceiver.h/.cpp       #   avformat sdp:// input; worker thread; VideoDecoder inside
-  Master.h/.cpp              #   Facade: SignalingChannel(server) + VideoEncoder + RtpSender
+    SignalingChannel.h/.cpp  #   WebSocket server (Master) or client (Slave); MSG:/SDP:/READY dispatch
+    RtpSender.h/.cpp         #   Multi-stream avformat rtp:// output; addStream()/sendPacket()/generateSdp()
+    RtpReceiver.h/.cpp       #   avformat sdp:// input; worker thread; VideoDecoder+AudioDecoder inside
+  Master.h/.cpp              #   Facade: SignalingChannel(server) + VideoEncoder + AudioEncoder + RtpSender
   Slave.h/.cpp               #   Facade: SignalingChannel(client) + RtpReceiver
   CMakeLists.txt             #   Builds strmctrl static lib
 
 demo/
   master.cpp / slave.cpp                   # Legacy IXWebSocket text-only smoke-test
   commons.h                                # Shared HOST/PORT constants for legacy demos
-  stream_demo/stream_master.cpp            # Full demo: file decode -> encode -> RTP + WS text
-  stream_demo/stream_slave.cpp             # Full demo: RTP receive/decode + WS text consumer
+  stream_demo/stream_master.cpp            # Full demo: file decode -> encode (A+V) -> RTP + WS text
+  stream_demo/stream_slave.cpp             # Full demo: RTP receive/decode (A+V) + WS text consumer
 
 3rdparty/IXWebSocket/    # git submodule — DO NOT modify source directly
 3rdparty/ffmpeg/         # LGPL shared build: include/ + lib/ (.dll.a MinGW import libs)
@@ -61,6 +65,10 @@ build\demo\stream_master.exe C:\path\to\video.mp4 11451 11452
 build\demo\stream_slave.exe 127.0.0.1 11451 11452
 ```
 
+> **Note**: When running both Master and Slave on the same machine, FFmpeg's RTP sender
+> automatically uses local ports offset by +100 (configurable via `RtpSender::setLocalPortBase()`)
+> to avoid binding conflicts with the Slave's receive sockets.
+
 ---
 
 ## Architecture & Data Flow
@@ -71,12 +79,13 @@ Master                                      Slave
     MSG:<text>   ── text messages ──>
     SDP:REQUEST  <── auto on connect ──
     SDP:<sdp>    ── SDP offer ────────>    RtpReceiver.openWithSdp()
-                                                bind UDP :11452
+                                                bind UDP :11452 (video)
+                                                bind UDP :11456 (audio)
                                                 avformat_find_stream_info
              <── READY ────────────────    sendReady()
   rtp_ready_ = true
-  VideoEncoder + RtpSender push frames ─> RtpReceiver worker thread
-                                            VideoDecoder (auto from SDP)
+  VideoEncoder + AudioEncoder + RtpSender push frames ─> RtpReceiver worker thread
+                                            VideoDecoder + AudioDecoder (auto from SDP)
 ```
 
 SDP negotiation and the **READY handshake** are fully transparent to callers — handled inside `SignalingChannel` + `Master`/`Slave`.
@@ -93,9 +102,13 @@ The full handshake must complete before any RTP packets are sent. **Never skip o
 
 2. On WS Open → Slave sends "SDP:REQUEST"
 
-3. Master receives "SDP:REQUEST" in onSlaveConnected()
-      └─ RtpSender::open(slave_ip, 11452, codec_ctx)   ← binds UDP send socket
-      └─ bindEncoderToSender()                          ← wires PacketCallback
+3. Master receives "SDP:REQUEST" in `onSdpRequest()`
+      └─ strips `:port` suffix from slave info → pure IP stored as `current_slave_ip_`
+      └─ RtpSender::addStream(slave_ip, rtp_port,   video_codec_ctx)  ← video stream
+      └─ RtpSender::addStream(slave_ip, rtp_port+4, audio_codec_ctx)  ← audio stream
+      └─ RtpSender::setLocalPortBase(rtp_port+100)                    ← avoids localhost bind clash
+      └─ RtpSender::open()
+      └─ bindEncoderToSender()                          ← wires PacketCallbacks
       └─ generateSdp() + signaling_->sendSdp(sdp)
 
 4. Slave receives "SDP:<sdp>"
@@ -103,10 +116,11 @@ The full handshake must complete before any RTP packets are sent. **Never skip o
             ├─ writes SDP to %TEMP%\strmctrl_recv.sdp   (binary, CRLF normalized)
             ├─ avformat_open_input  with fmt="sdp",
             │      protocol_whitelist="file,crypto,data,rtp,udp",
-            │      analyzeduration=3000000, probesize=1048576
+            │      analyzeduration=500000, probesize=1048576
             ├─ avformat_find_stream_info  (warning on "unspecified size" is OK —
             │      H.264 decoder self-configures from in-band SPS NAL units)
             └─ VideoDecoder::openWithParameters(codecpar)
+            └─ AudioDecoder::openWithParameters(codecpar)  ← if audio stream present
       └─ RtpReceiver::start()  ← worker thread begins av_read_frame loop
       └─ signaling_->sendReady()  ← sends bare "READY" frame to Master
 
@@ -124,12 +138,14 @@ The full handshake must complete before any RTP packets are sent. **Never skip o
 // ---- Master side ----
 strmctrl::Master master;
 master.setCodecConfig(strmctrl::CodecConfig::makeOpenH264(1280, 720, 30, 2000));
+master.setAudioConfig(strmctrl::AudioConfig::makeAAC(48000, 2, 128000));
 master.setMessageCallback([](const strmctrl::TextMessage& m){ /* handle incoming text */ });
 master.setConnectionCallback([](bool connected, const std::string& info){ });
 master.setSignalingPort(11451);
 master.setRtpPort(11452);
 master.start();
 master.pushVideoFrame(avframe_ptr);  // call per decoded source frame
+master.pushAudioFrame(audio_frame);  // call per decoded audio frame
 master.sendMessage("hello");
 master.stop();
 
@@ -138,6 +154,9 @@ strmctrl::Slave slave;
 slave.setVideoFrameCallback([](const strmctrl::VideoFrame& f){
     auto copy = f.clone();  // MUST clone if frame is needed beyond callback scope
     // hand copy to consumer thread / queue
+});
+slave.setAudioFrameCallback([](const strmctrl::AudioFrame& f){
+    auto copy = f.clone();  // MUST clone if frame is needed beyond callback scope
 });
 slave.setMessageCallback([](const strmctrl::TextMessage& m){ });
 slave.connect("192.168.1.100", 11451, 11452);
@@ -153,12 +172,13 @@ slave.disconnect();
 |---|---|
 | `MessageCallback` | IXWebSocket internal dispatch thread |
 | `VideoFrameCallback` | RtpReceiver worker thread |
+| `AudioFrameCallback` | RtpReceiver worker thread |
 | `ConnectionCallback` | IXWebSocket internal dispatch thread |
 
 - All callbacks are **blocking** — the firing thread is stalled until the callback returns.
 - **Do not** call heavy processing, blocking I/O, or long loops directly in callbacks.
 - Use a producer-consumer queue (see `stream_slave.cpp` for reference pattern).
-- `VideoFrame` lifetime is **callback-scoped** — call `.clone()` to get an independent copy.
+- `VideoFrame` / `AudioFrame` lifetime is **callback-scoped** — call `.clone()` to get an independent copy.
 
 ---
 
@@ -238,9 +258,16 @@ Messages sent over the WebSocket signaling channel carry a prefix:
 | Port | Default | Purpose |
 |---|---|---|
 | 11451 | Signaling | WebSocket (TCP) — Master listens, Slave connects |
-| 11452 | RTP | UDP — Master sends, Slave binds to receive |
+| 11452 | RTP Video | UDP — Master sends, Slave binds to receive |
+| 11453 | RTCP Video | UDP — auto-used by FFmpeg alongside video RTP |
+| 11456 | RTP Audio | UDP — `rtp_port + 4`; Master sends, Slave binds |
+| 11457 | RTCP Audio | UDP — auto-used by FFmpeg alongside audio RTP |
 
 **Avoid UDP 5004** on Windows — `wmpnetwk.exe` (Windows Media Player Network Sharing) routinely occupies it, causing `bind failed: WSAEACCES (-10013)` on the Slave side.
+
+**Localhost bind-collision avoidance**: When Master and Slave run on the same machine, the RTP sender sets a local port base of `rtp_port + 100` via `RtpSender::setLocalPortBase()`. This makes the sender bind its outgoing UDP sockets to ports `11552/11553` (video) and `11554/11555` (audio), well away from the receiver's ports.
+
+**`current_slave_ip_` in Master**: The connection info string from IXWebSocket is `"ip:port"` (e.g. `"127.0.0.1:52390"`). `Master::onSlaveConnected()` always strips the `:port` suffix before storing the IP, supporting both IPv4 and IPv6 (`[::1]:port`) formats.
 
 When choosing alternative ports, ensure both TCP (signaling) and UDP (RTP) on the chosen numbers are free. Check with:
 ```powershell
@@ -256,7 +283,7 @@ These values are **hardcoded in `RtpReceiver::openWithUrl()`** and must not be r
 | `av_dict_set` key | Value | Reason |
 |---|---|---|
 | `protocol_whitelist` | `file,crypto,data,rtp,udp` | The `sdp` demuxer requires explicit protocol allowlist; omitting it causes `avformat_open_input` to fail |
-| `analyzeduration` | `3000000` (3 s) | Gives `avformat_find_stream_info` time to receive real RTP packets before timing out |
+| `analyzeduration` | `500000` (0.5 s) | Gives `avformat_find_stream_info` time to receive real RTP packets; 500ms is sufficient for H.264 SPS/PPS NAL detection |
 | `probesize` | `1048576` (1 MB) | Probe buffer; keeps the demuxer from stopping early on sparse RTP streams |
 
 **SDP file path**: always `%TEMP%\strmctrl_recv.sdp`, written in **binary mode** with CRLF-normalized line endings (RFC 4566 §5 requires `\r\n`). Never open it in text mode or the Windows CRT will double-convert the line endings.
@@ -308,5 +335,5 @@ Print a clear error and exit (or disable affected features) if the check returns
 
 ## Known Issues
 
-*(Currently no known critical issues. The previous `stream_master` looping instability and `libopenh264` encoding failures have been resolved.)*
+*(Currently no known critical issues. The previous `stream_master` looping instability, `libopenh264` encoding failures, and localhost RTP bind-collision (WSAEADDRINUSE) on multi-stream setups have all been resolved.)*
 ```

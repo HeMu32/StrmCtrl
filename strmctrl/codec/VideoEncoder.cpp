@@ -126,14 +126,14 @@ void VideoEncoder::close()
 // 编码
 // ---------------------------------------------------------------------------
 
-bool VideoEncoder::encode(AVFrame* frame)
+bool VideoEncoder::encode(const AVFrame* frame)
 {
     if (!codec_ctx_) {
         last_error_ = "Encoder not open";
         return false;
     }
 
-    AVFrame* input_frame = frame;
+    const AVFrame* input_frame = frame;
 
     // 如果输入帧的格式或尺寸与配置不符，先做 swscale 转换
     if (frame &&
@@ -156,7 +156,7 @@ bool VideoEncoder::encode(AVFrame* frame)
         }
 
         sws_scale(sws_ctx_,
-                  frame->data, frame->linesize, 0, frame->height,
+                  (const uint8_t * const *)frame->data, frame->linesize, 0, frame->height,
                   sws_frame_->data, sws_frame_->linesize);
 
         sws_frame_->pts = frame->pts;

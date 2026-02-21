@@ -29,17 +29,28 @@
 
 #include "strmctrl/Slave.h"
 #include "strmctrl/core/VideoFrame.h"
+#include "strmctrl/core/AudioFrame.h"
 
 // ---------------------------------------------------------------------------
 // 帧信息打印辅助
 // ---------------------------------------------------------------------------
-static void printFrameInfo(const strmctrl::VideoFrame &frame)
+static void printVideoFrameInfo(const strmctrl::VideoFrame &frame)
 {
-    // make it explicit that the slave is reporting the decoded (encoder-output) frame
-    std::cout << "[Slave] Decoded frame (encoder output): "
+    std::cout << "[Slave] Video Frame: "
               << frame.width() << "x" << frame.height()
               << " pts=" << frame.pts()
               << " fmt=" << static_cast<int>(frame.format())
+              << "\n";
+}
+
+static void printAudioFrameInfo(const strmctrl::AudioFrame &frame)
+{
+    std::cout << "[Slave] Audio Frame: "
+              << frame.nbSamples() << " samples"
+              << " pts=" << frame.pts()
+              << " fmt=" << static_cast<int>(frame.format())
+              << " channels=" << frame.channels()
+              << " sample_rate=" << frame.sampleRate()
               << "\n";
 }
 
@@ -64,10 +75,9 @@ int main(int argc, char *argv[])
 
     // -----------------------------------------------------------------------
     // 帧队列（生产者-消费者）
-    // 视频帧 callback 尽快返回，将帧 clone 后入队；
-    // 消费线程负责处理（此 demo 中仅打印信息）。
     // -----------------------------------------------------------------------
-    std::queue<strmctrl::VideoFrame> frame_queue;
+    std::queue<strmctrl::VideoFrame> video_queue;
+    std::queue<strmctrl::AudioFrame> audio_queue;
     std::mutex                       queue_mutex;
     std::condition_variable          queue_cv;
     std::atomic_bool                 running{true};
@@ -78,25 +88,38 @@ int main(int argc, char *argv[])
     strmctrl::Slave slave;
 
     slave.setMessageCallback([](const strmctrl::TextMessage &msg)
-                             { std::cout << "[Master " << msg.sender_id << "] " << msg.text << "\n"; });
+                             {
+                                 std::cout << "[Master] " << msg.text << "\n";
+                             });
 
     slave.setConnectionCallback([&](bool connected, const std::string &info)
                                 {
-        std::cout << "[Slave] "
-                  << (connected ? "Connected to master: " : "Disconnected: ")
-                  << info << "\n";
+    std::cout << "[Slave] "
+          << (connected ? "Connected to master: " : "Disconnected: ")
+          << info << "\n";
+        if (connected) {
+            // no prompt
+        }
         if (!connected) {
-            // master 断开后停止消费循环，让主线程正常退出
             running.store(false);
             queue_cv.notify_all();
         } });
 
-    // 视频帧 callback：快速 clone 后入队
+    // 视频帧 callback
     slave.setVideoFrameCallback(
         [&](const strmctrl::VideoFrame &frame)
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
-            frame_queue.push(frame.clone());
+            video_queue.push(frame.clone());
+            queue_cv.notify_one();
+        });
+
+    // 音频帧 callback
+    slave.setAudioFrameCallback(
+        [&](const strmctrl::AudioFrame &frame)
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            audio_queue.push(frame.clone());
             queue_cv.notify_one();
         });
 
@@ -105,7 +128,7 @@ int main(int argc, char *argv[])
     // -----------------------------------------------------------------------
     if (!slave.connect(master_host, sig_port, rtp_port))
     {
-        std::cerr << "[Slave] connect failed: " << slave.lastError() << "\n";
+        std::cerr << "[Slave] connect failed.\n";
         ix::uninitNetSystem();
         return 1;
     }
@@ -114,54 +137,64 @@ int main(int argc, char *argv[])
               << "[Slave] Type a message and press Enter to send; 'quit' to exit.\n";
 
     // -----------------------------------------------------------------------
-    // 帧消费线程：从队列取出帧并处理
+    // 帧消费线程：模拟音视频同步播放
     // -----------------------------------------------------------------------
     std::thread consumer_thread([&]()
-                                {
-        int64_t frame_count = 0;
+    {
+        int64_t v_count = 0;
+        int64_t a_count = 0;
         while (running.load()) {
             std::unique_lock<std::mutex> lock(queue_mutex);
-            queue_cv.wait_for(lock, std::chrono::milliseconds(200),
-                              [&]{ return !frame_queue.empty() || !running.load(); });
+            queue_cv.wait_for(lock, std::chrono::milliseconds(50),
+                              [&]{ return !video_queue.empty() || !audio_queue.empty() || !running.load(); });
 
-            while (!frame_queue.empty()) {
-                strmctrl::VideoFrame f = std::move(frame_queue.front());
-                frame_queue.pop();
+            while (!video_queue.empty()) {
+                strmctrl::VideoFrame f = std::move(video_queue.front());
+                video_queue.pop();
                 lock.unlock();
 
-                ++frame_count;
-                // 每 30 帧打印一次，避免刷屏
-                if (frame_count % 30 == 1) printFrameInfo(f);
+                ++v_count;
+                if (v_count % 30 == 1) printVideoFrameInfo(f);
 
                 lock.lock();
             }
-        } });
+
+            while (!audio_queue.empty()) {
+                strmctrl::AudioFrame f = std::move(audio_queue.front());
+                audio_queue.pop();
+                lock.unlock();
+
+                ++a_count;
+                if (a_count % 50 == 1) printAudioFrameInfo(f);
+
+                lock.lock();
+            }
+        } 
+    });
 
     // -----------------------------------------------------------------------
-    // 控制台输入线程：仅负责发消息，EOF 不影响 slave 生命周期
+    // 控制台输入线程
     // -----------------------------------------------------------------------
     std::atomic_bool stop_input{false};
     std::thread input_thread([&]()
-                             {
-                                 std::string line;
-                                 while (!stop_input.load() && std::getline(std::cin, line))
-                                 {
-                                     if (line == "quit")
-                                     {
-                                         running.store(false);
-                                         queue_cv.notify_all();
-                                         break;
-                                     }
-                                     if (!slave.sendMessage(line))
-                                     {
-                                         std::cerr << "[Slave] sendMessage failed: " << slave.lastError() << "\n";
-                                     }
-                                 }
-                                 // stdin EOF 时什么都不做，slave 继续运行
-                             });
+    {
+        std::string line;
+        while (!stop_input.load() && std::getline(std::cin, line))
+        {
+            if (line == "quit")
+            {
+                running.store(false);
+                queue_cv.notify_all();
+                break;
+            }
+            if (!line.empty()) {
+                slave.sendMessage(line);
+            }
+        }
+    });
 
     // -----------------------------------------------------------------------
-    // 主线程：等待帧消费线程结束（视频流关闭 / quit）
+    // 主线程：等待帧消费线程结束
     // -----------------------------------------------------------------------
     if (consumer_thread.joinable())
         consumer_thread.join();

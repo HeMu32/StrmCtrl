@@ -5,6 +5,7 @@
 
 #include "Message.h"
 #include "VideoFrame.h"
+#include "AudioFrame.h"
 
 namespace strmctrl {
 
@@ -24,6 +25,15 @@ using MessageCallback = std::function<void(const TextMessage& msg)>;
  * @param frame  当前解码帧（生命周期仅覆盖 callback 执行期间）
  */
 using VideoFrameCallback = std::function<void(const VideoFrame& frame)>;
+
+/**
+ * @brief 解码音频帧到达时的回调类型。
+ *
+ * 在 RtpReceiver / AudioDecoder 的内部线程中被调用，实现应尽快返回。
+ * 若需在 callback 之外保留帧，应调用 frame.clone()。
+ * @param frame  当前解码帧（生命周期仅覆盖 callback 执行期间）
+ */
+using AudioFrameCallback = std::function<void(const AudioFrame& frame)>;
 
 /**
  * @brief 连接状态变化时的回调类型。

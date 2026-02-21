@@ -27,6 +27,9 @@ namespace strmctrl {
  *     // 尽快返回！如需处理，先 clone 后入队
  *     std::cout << "Frame: " << frame.width() << "x" << frame.height() << "\n";
  * });
+ * slave.setAudioFrameCallback([](const strmctrl::AudioFrame& frame) {
+ *     // 尽快返回！如需处理，先 clone 后入队
+ * });
  *
  * // 连接主端（阻断直到信令通道就绪）
  * slave.connect("192.168.1.100", 11451, 11452);
@@ -75,6 +78,12 @@ public:
     void setVideoFrameCallback(VideoFrameCallback cb);
 
     /**
+     * @brief 注册解码音频帧 callback。
+     * @param cb  帧到达时调用（在 RtpReceiver 工作线程中，应尽快返回）
+     */
+    void setAudioFrameCallback(AudioFrameCallback cb);
+
+    /**
      * @brief 注册连接状态变化 callback。
      * @param cb  连接建立/断开时调用
      */
@@ -101,45 +110,41 @@ public:
                  int rtp_port       = 11452);
 
     /**
-     * @brief 断开与主端的连接，停止 RTP 接收。
+     * @brief 断开与主端的连接。
+     *
+     * 停止信令通道和 RTP 接收器。
      */
     void disconnect();
 
-    /** @brief 是否已连接到主端的信令通道。 */
-    bool isConnected() const;
+    /** @brief 是否已连接到主端。 */
+    bool isConnected() const noexcept { return connected_; }
 
     // -----------------------------------------------------------------------
-    // 发送
+    // 消息
     // -----------------------------------------------------------------------
 
     /**
      * @brief 向主端发送文本消息。
-     * @param text  消息内容（UTF-8）
-     * @return      true 表示消息成功入队；false 表示未连接
+     * @param text  消息内容
      */
-    bool sendMessage(const std::string& text);
-
-    // -----------------------------------------------------------------------
-    // 访问器
-    // -----------------------------------------------------------------------
-
-    /** @brief 返回最近一次错误描述字符串。 */
-    const std::string& lastError() const noexcept { return last_error_; }
+    void sendMessage(const std::string& text);
 
 private:
-    // 内部：收到 SDP 后初始化 RtpReceiver
+    // 内部回调处理
+    void onConnected();
+    void onDisconnected();
     void onSdpReceived(const std::string& sdp);
 
-    int rtp_port_ = 11452;
+    bool connected_ = false;
+    int  rtp_port_  = 11452;
 
     std::unique_ptr<SignalingChannel> signaling_;
-    std::unique_ptr<RtpReceiver>      receiver_;
+    std::unique_ptr<RtpReceiver>      rtp_receiver_;
 
-    VideoFrameCallback frame_cb_;
     MessageCallback    msg_cb_;
+    VideoFrameCallback video_cb_;
+    AudioFrameCallback audio_cb_;
     ConnectionCallback conn_cb_;
-
-    std::string last_error_;
 };
 
 } // namespace strmctrl

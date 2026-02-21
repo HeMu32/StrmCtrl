@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "../codec/VideoDecoder.h"
+#include "../codec/AudioDecoder.h"
 #include "../core/Callbacks.h"
 
 extern "C" {
@@ -16,28 +17,12 @@ extern "C" {
 namespace strmctrl {
 
 /**
- * @brief RTP 接收器，在独立线程中持续接收并解码来自主端的 RTP 视频流。
+ * @brief RTP 接收器，在独立线程中持续接收并解码来自主端的 RTP 音视频流。
  *
  * RtpReceiver 通过 FFmpeg 的 avformat 层打开 "sdp://" 或 "rtp://" 输入，
- * 并在内部工作线程中循环调用 av_read_frame() + VideoDecoder::decode()。
- * 解码结果通过 VideoFrameCallback 在工作线程中同步回调。
- *
- * ### SDP 初始化流程
- * 从端收到 SDP 字符串（经 SignalingChannel）后，调用 openWithSdp()；
- * 该方法将 SDP 写入临时文件，再由 FFmpeg 以 "sdp" 格式打开。
- *
- * ### 典型用法
- * @code
- * strmctrl::RtpReceiver receiver;
- * receiver.setFrameCallback([](const strmctrl::VideoFrame& frame) {
- *     // 在此处理解码帧（尽快返回！）
- * });
- *
- * signaling->setSdpCallback([&](const std::string& sdp) {
- *     receiver.openWithSdp(sdp);
- *     receiver.start();
- * });
- * @endcode
+ * 并在内部工作线程中循环调用 av_read_frame()。
+ * 根据 stream_index 将包分发给 VideoDecoder 或 AudioDecoder。
+ * 解码结果通过对应的 Callback 在工作线程中同步回调。
  */
 class RtpReceiver {
 public:
@@ -56,10 +41,14 @@ public:
     // -----------------------------------------------------------------------
 
     /**
-     * @brief 注册解码帧到达 callback（在工作线程中调用，应尽快返回）。
-     * @param cb  VideoFrameCallback
+     * @brief 注册视频解码帧到达 callback（在工作线程中调用，应尽快返回）。
      */
-    void setFrameCallback(VideoFrameCallback cb);
+    void setVideoFrameCallback(VideoFrameCallback cb);
+
+    /**
+     * @brief 注册音频解码帧到达 callback（在工作线程中调用，应尽快返回）。
+     */
+    void setAudioFrameCallback(AudioFrameCallback cb);
 
     /**
      * @brief 注册错误 callback（工作线程遇到致命错误时调用）。
@@ -74,7 +63,7 @@ public:
     /**
      * @brief 通过 SDP 字符串初始化 RTP 输入上下文。
      *
-     * 将 SDP 写入临时内存 IO，由 FFmpeg 以 sdp 格式解析流参数并初始化解码器。
+     * 将 SDP 写入临时文件，由 FFmpeg 以 sdp 格式解析流参数并初始化解码器。
      * 该方法是阻断的，返回后即可调用 start()。
      *
      * @param sdp  SDP 字符串（由 RtpSender::generateSdp() 生成并经信令通道传输）
@@ -98,40 +87,38 @@ public:
     void start();
 
     /**
-     * @brief 请求停止工作线程，并等待其退出。
+     * @brief 停止工作线程并关闭输入上下文。
+     *
+     * 阻塞直到工作线程退出。
      */
     void stop();
 
-    /** @brief 工作线程是否正在运行。 */
+    /** @brief 接收器是否正在运行。 */
     bool isRunning() const noexcept { return running_.load(); }
 
     // -----------------------------------------------------------------------
     // 访问器
     // -----------------------------------------------------------------------
 
-    /** @brief 返回最近一次错误的描述字符串。 */
-    const std::string& lastError() const noexcept { return last_error_; }
+    std::string lastError() const noexcept { return last_error_; }
 
 private:
-    // 工作线程主函数
-    void receiveLoop();
+    void workerThread();
 
-    // 内部：打开已分配好的 fmt_ctx_，初始化解码器
-    bool initDecoder();
+    AVFormatContext* fmt_ctx_ = nullptr;
+    int video_stream_idx_ = -1;
+    int audio_stream_idx_ = -1;
 
-    AVFormatContext*  fmt_ctx_    = nullptr;
-    int               video_idx_  = -1;      ///< 视频流索引
+    VideoDecoder video_decoder_;
+    AudioDecoder audio_decoder_;
 
-    VideoDecoder      decoder_;
-
-    VideoFrameCallback                      frame_cb_;
+    VideoFrameCallback video_cb_;
+    AudioFrameCallback audio_cb_;
     std::function<void(const std::string&)> error_cb_;
 
-    std::thread      worker_;
-    std::atomic_bool running_{false};
-    std::atomic_bool stop_requested_{false};
-
-    std::string last_error_;
+    std::atomic<bool> running_{false};
+    std::thread       thread_;
+    std::string       last_error_;
 };
 
 } // namespace strmctrl

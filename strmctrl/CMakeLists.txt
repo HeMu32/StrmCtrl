@@ -9,14 +9,20 @@ add_library(strmctrl STATIC
     # Core data structures (header-only, listed for IDE visibility)
     core/Message.h
     core/VideoFrame.h
+    core/AudioFrame.h
     core/Callbacks.h
 
     # Codec layer
     codec/CodecConfig.h
+    codec/AudioConfig.h
     codec/VideoEncoder.h
     codec/VideoEncoder.cpp
     codec/VideoDecoder.h
     codec/VideoDecoder.cpp
+    codec/AudioEncoder.h
+    codec/AudioEncoder.cpp
+    codec/AudioDecoder.h
+    codec/AudioDecoder.cpp
 
     # Transport layer
     transport/SignalingChannel.h

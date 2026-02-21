@@ -33,126 +33,154 @@ RtpSender::~RtpSender()
 // 生命周期
 // ---------------------------------------------------------------------------
 
-bool RtpSender::open(const std::string&    dest_host,
-                     int                   dest_port,
-                     const AVCodecContext* codec_ctx)
+int RtpSender::addStream(const std::string&    dest_host,
+                         int                   dest_port,
+                         const AVCodecContext* codec_ctx)
 {
     if (!codec_ctx) {
-        last_error_ = "RtpSender::open: null codec_ctx";
-        return false;
+        last_error_ = "RtpSender::addStream: null codec_ctx";
+        return -1;
     }
 
-    const std::string url = "rtp://" + dest_host + ":" + std::to_string(dest_port);
+    if (is_open_) {
+        last_error_ = "RtpSender::addStream: already open";
+        return -1;
+    }
+
+    StreamContext ctx;
+    ctx.url = "rtp://" + dest_host + ":" + std::to_string(dest_port);
 
     // 分配输出格式上下文（rtp 格式）
-    int ret = avformat_alloc_output_context2(&fmt_ctx_, nullptr, "rtp", url.c_str());
-    if (ret < 0 || !fmt_ctx_) {
+    int ret = avformat_alloc_output_context2(&ctx.fmt_ctx, nullptr, "rtp", ctx.url.c_str());
+    if (ret < 0 || !ctx.fmt_ctx) {
         last_error_ = "avformat_alloc_output_context2: " + avErrStrSend(ret);
-        return false;
+        return -1;
     }
 
-    // 添加视频流
-    stream_ = avformat_new_stream(fmt_ctx_, nullptr);
-    if (!stream_) {
+    // 添加流
+    ctx.stream = avformat_new_stream(ctx.fmt_ctx, nullptr);
+    if (!ctx.stream) {
         last_error_ = "avformat_new_stream failed";
-        avformat_free_context(fmt_ctx_);
-        fmt_ctx_ = nullptr;
-        return false;
+        avformat_free_context(ctx.fmt_ctx);
+        return -1;
     }
 
     // 从编码器上下文复制参数到流
-    ret = avcodec_parameters_from_context(stream_->codecpar, codec_ctx);
+    ret = avcodec_parameters_from_context(ctx.stream->codecpar, codec_ctx);
     if (ret < 0) {
         last_error_ = "avcodec_parameters_from_context: " + avErrStrSend(ret);
-        avformat_free_context(fmt_ctx_);
-        fmt_ctx_ = nullptr;
+        avformat_free_context(ctx.fmt_ctx);
+        return -1;
+    }
+
+    ctx.stream->time_base = codec_ctx->time_base;
+    ctx.enc_time_base = codec_ctx->time_base;
+    ctx.last_dts = AV_NOPTS_VALUE;
+    ctx.pkt_index = 0;
+
+    streams_.push_back(std::move(ctx));
+    return static_cast<int>(streams_.size() - 1);
+}
+
+bool RtpSender::open()
+{
+    if (is_open_) {
+        last_error_ = "RtpSender::open: already open";
         return false;
     }
 
-    stream_->time_base = codec_ctx->time_base;
-    enc_time_base_ = codec_ctx->time_base;
+    for (std::size_t i = 0; i < streams_.size(); ++i) {
+        auto& ctx = streams_[i];
+        std::string open_url = ctx.url;
 
-    // 打开 UDP 输出 IO
-    ret = avio_open(&fmt_ctx_->pb, url.c_str(), AVIO_FLAG_WRITE);
-    if (ret < 0) {
-        last_error_ = "avio_open(" + url + "): " + avErrStrSend(ret);
-        avformat_free_context(fmt_ctx_);
-        fmt_ctx_ = nullptr;
-        return false;
+        // 可选：为发送端显式指定本地 RTP/RTCP 端口，避免同机时与接收端冲突。
+        if (local_port_base_ > 0) {
+            const int local_rtp_port  = local_port_base_ + static_cast<int>(i) * 2;
+            const int local_rtcp_port = local_rtp_port + 1;
+            open_url += "?localrtpport=" + std::to_string(local_rtp_port)
+                     +  "&localrtcpport=" + std::to_string(local_rtcp_port);
+        }
+
+        // 打开 UDP 输出 IO
+        int ret = avio_open(&ctx.fmt_ctx->pb, open_url.c_str(), AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            last_error_ = "avio_open(" + open_url + "): " + avErrStrSend(ret);
+            close();
+            return false;
+        }
+
+        // 写文件头（对 RTP 来说会触发 SDP 生成）
+        ret = avformat_write_header(ctx.fmt_ctx, nullptr);
+        if (ret < 0) {
+            last_error_ = "avformat_write_header: " + avErrStrSend(ret);
+            close();
+            return false;
+        }
     }
 
-    // 写文件头（对 RTP 来说会触发 SDP 生成）
-    ret = avformat_write_header(fmt_ctx_, nullptr);
-    if (ret < 0) {
-        last_error_ = "avformat_write_header: " + avErrStrSend(ret);
-        avio_closep(&fmt_ctx_->pb);
-        avformat_free_context(fmt_ctx_);
-        fmt_ctx_ = nullptr;
-        return false;
-    }
-
-    pkt_index_ = 0;
-    last_dts_ = AV_NOPTS_VALUE;
+    is_open_ = true;
     return true;
 }
 
 void RtpSender::close()
 {
-    if (fmt_ctx_) {
-        av_write_trailer(fmt_ctx_);
-        if (fmt_ctx_->pb) avio_closep(&fmt_ctx_->pb);
-        avformat_free_context(fmt_ctx_);
-        fmt_ctx_ = nullptr;
-        stream_  = nullptr;
+    for (auto& ctx : streams_) {
+        if (ctx.fmt_ctx) {
+            if (ctx.fmt_ctx->pb) {
+                av_write_trailer(ctx.fmt_ctx);
+                avio_closep(&ctx.fmt_ctx->pb);
+            }
+            avformat_free_context(ctx.fmt_ctx);
+            ctx.fmt_ctx = nullptr;
+        }
     }
+    streams_.clear();
+    is_open_ = false;
 }
 
 // ---------------------------------------------------------------------------
 // 推流
 // ---------------------------------------------------------------------------
 
-bool RtpSender::sendPacket(AVPacket* pkt)
+bool RtpSender::sendPacket(AVPacket* pkt, int stream_index)
 {
-    if (!fmt_ctx_ || !stream_) {
-        last_error_ = "RtpSender not open";
+    if (!is_open_ || !pkt) return false;
+    if (stream_index < 0 || stream_index >= static_cast<int>(streams_.size())) {
+        last_error_ = "RtpSender::sendPacket: invalid stream_index";
         return false;
     }
 
-    // 克隆包以便调整时间戳，不破坏调用方的包
-    AVPacket* out = av_packet_clone(pkt);
-    if (!out) {
+    auto& ctx = streams_[stream_index];
+
+    // 复制包，避免修改原始包
+    AVPacket* out_pkt = av_packet_clone(pkt);
+    if (!out_pkt) {
         last_error_ = "av_packet_clone failed";
         return false;
     }
 
-    out->stream_index = stream_->index;
+    // 转换时间基
+    av_packet_rescale_ts(out_pkt, ctx.enc_time_base, ctx.stream->time_base);
+    out_pkt->stream_index = ctx.stream->index;
 
-    // 如果包没有有效 pts/dts，用单调递增的包索引推算
-    if (out->pts == AV_NOPTS_VALUE) {
-        out->pts = pkt_index_;
-        out->dts = pkt_index_;
+    // 强制单调递增 DTS
+    if (ctx.last_dts != AV_NOPTS_VALUE && out_pkt->dts <= ctx.last_dts) {
+        int64_t diff = ctx.last_dts - out_pkt->dts + 1;
+        out_pkt->dts += diff;
+        out_pkt->pts += diff;
     }
-    ++pkt_index_;
+    ctx.last_dts = out_pkt->dts;
 
-    // 将 pts/dts 从编码器时间基转换到流时间基
-    av_packet_rescale_ts(out, enc_time_base_, stream_->time_base);
-
-    // 确保 dts 单调递增，防止 av_interleaved_write_frame 报错
-    if (last_dts_ != AV_NOPTS_VALUE && out->dts <= last_dts_) {
-        out->dts = last_dts_ + 1;
-        if (out->pts < out->dts) {
-            out->pts = out->dts;
-        }
-    }
-    last_dts_ = out->dts;
-
-    int ret = av_interleaved_write_frame(fmt_ctx_, out);
-    av_packet_free(&out);
+    // 写入
+    int ret = av_interleaved_write_frame(ctx.fmt_ctx, out_pkt);
+    av_packet_free(&out_pkt);
 
     if (ret < 0) {
         last_error_ = "av_interleaved_write_frame: " + avErrStrSend(ret);
         return false;
     }
+
+    ctx.pkt_index++;
     return true;
 }
 
@@ -162,14 +190,19 @@ bool RtpSender::sendPacket(AVPacket* pkt)
 
 std::string RtpSender::generateSdp() const
 {
-    if (!fmt_ctx_) return {};
+    if (!is_open_ || streams_.empty()) return "";
 
-    // FFmpeg 在写 header 后将 SDP 存入 AVFormatContext::sdp（仅 rtp/rtsp 格式）
-    // 通过 av_sdp_create 生成标准 SDP
+    std::vector<AVFormatContext*> ctxs;
+    for (const auto& ctx : streams_) {
+        ctxs.push_back(ctx.fmt_ctx);
+    }
+
     char sdp_buf[4096] = {};
-    AVFormatContext* ctx_arr[1] = { fmt_ctx_ };
-    int ret = av_sdp_create(ctx_arr, 1, sdp_buf, sizeof(sdp_buf));
-    if (ret < 0) return {};
+    int ret = av_sdp_create(ctxs.data(), static_cast<int>(ctxs.size()), sdp_buf, sizeof(sdp_buf));
+    if (ret < 0) {
+        return "";
+    }
+
     return std::string(sdp_buf);
 }
 
