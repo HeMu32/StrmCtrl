@@ -56,6 +56,11 @@ add_subdirectory(strmctrl)
 # Demo programs
 add_subdirectory(demo)
 
+# Tests
+include(CTest)
+enable_testing()
+add_subdirectory(test)
+
 # Make compile_commands.json available at project root for editors that
 # look for it there (this target copies from build/ when you run a build).
 add_custom_target(export_compile_commands ALL

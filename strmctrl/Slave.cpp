@@ -21,10 +21,30 @@ Slave::~Slave()
 // 配置
 // ---------------------------------------------------------------------------
 
-void Slave::setMessageCallback(MessageCallback cb)     { msg_cb_   = std::move(cb); }
-void Slave::setVideoFrameCallback(VideoFrameCallback cb){ video_cb_ = std::move(cb); }
-void Slave::setAudioFrameCallback(AudioFrameCallback cb){ audio_cb_ = std::move(cb); }
-void Slave::setConnectionCallback(ConnectionCallback cb){ conn_cb_  = std::move(cb); }
+void Slave::setMessageCallback(MessageCallback cb)
+{
+    msg_cb_ = cb;
+    if (signaling_) signaling_->setMessageCallback(cb);
+}
+
+void Slave::setVideoFrameCallback(VideoFrameCallback cb)
+{
+    video_cb_ = cb;
+    std::lock_guard<std::mutex> lock(rtp_mutex_);
+    if (rtp_receiver_) rtp_receiver_->setVideoFrameCallback(cb);
+}
+
+void Slave::setAudioFrameCallback(AudioFrameCallback cb)
+{
+    audio_cb_ = cb;
+    std::lock_guard<std::mutex> lock(rtp_mutex_);
+    if (rtp_receiver_) rtp_receiver_->setAudioFrameCallback(cb);
+}
+
+void Slave::setConnectionCallback(ConnectionCallback cb)
+{
+    conn_cb_ = cb;
+}
 
 // ---------------------------------------------------------------------------
 // 生命周期
@@ -75,11 +95,24 @@ bool Slave::connect(const std::string& master_host,
 
 void Slave::disconnect()
 {
-    if (rtp_receiver_) {
-        rtp_receiver_->stop();
-        rtp_receiver_.reset();
+    connected_ = false;
+
+    if (init_thread_.joinable()) {
+        init_thread_.join();
     }
+
+    {
+        std::lock_guard<std::mutex> lock(rtp_mutex_);
+        if (rtp_receiver_) {
+            rtp_receiver_->stop();
+            rtp_receiver_.reset();
+        }
+    }
+    
     if (signaling_) {
+        // Clear connection callback before stopping signaling to avoid 
+        // concurrent/reentrant onDisconnected calls during destruction.
+        signaling_->setConnectionCallback(nullptr);
         signaling_->stop();
         signaling_.reset();
     }
@@ -111,36 +144,59 @@ void Slave::onConnected()
 void Slave::onDisconnected()
 {
     connected_ = false;
-    if (rtp_receiver_) {
-        rtp_receiver_->stop();
-        rtp_receiver_.reset();
+    {
+        std::lock_guard<std::mutex> lock(rtp_mutex_);
+        if (rtp_receiver_) {
+            rtp_receiver_->stop();
+            rtp_receiver_.reset();
+        }
     }
     std::cout << "[Slave] Disconnected from master.\n";
 }
 
 void Slave::onSdpReceived(const std::string& sdp)
 {
-    std::cout << "[Slave] Received SDP offer, initializing RTP receiver...\n";
-
-    rtp_receiver_ = std::make_unique<RtpReceiver>();
-
-    if (video_cb_) rtp_receiver_->setVideoFrameCallback(video_cb_);
-    if (audio_cb_) rtp_receiver_->setAudioFrameCallback(audio_cb_);
-
-    rtp_receiver_->setErrorCallback([](const std::string& err) {
-        std::cerr << "[Slave] RtpReceiver error: " << err << "\n";
-    });
-
-    if (!rtp_receiver_->openWithSdp(sdp)) {
-        std::cerr << "[Slave] RtpReceiver::openWithSdp failed: " << rtp_receiver_->lastError() << "\n";
-        return;
+    if (init_thread_.joinable()) {
+        init_thread_.join();
     }
 
-    rtp_receiver_->start();
-    std::cout << "[Slave] RTP receiver started.\n";
+    // 启动一个分离的线程来初始化 RTP 接收，避免阻塞信令通道（WebSocket）的工作线程
+    init_thread_ = std::thread([this, sdp]() {
+        std::cout << "[Slave] Received SDP offer, initializing RTP receiver in background thread...\n" << std::flush;
 
-    // 通知主端已就绪
-    signaling_->sendReady();
+        std::unique_ptr<RtpReceiver> receiver = std::make_unique<RtpReceiver>();
+
+        if (video_cb_) receiver->setVideoFrameCallback(video_cb_);
+        if (audio_cb_) receiver->setAudioFrameCallback(audio_cb_);
+
+        receiver->setErrorCallback([](const std::string& err) {
+            std::cerr << "[Slave] RtpReceiver error: " << err << "\n";
+        });
+
+        if (!receiver->openWithSdp(sdp)) {
+            std::cerr << "[Slave] RtpReceiver::openWithSdp failed: " << receiver->lastError() << "\n";
+            return;
+        }
+
+        // 安全地将就绪的 receiver 赋值给类成员
+        {
+            std::lock_guard<std::mutex> lock(rtp_mutex_);
+            if (!connected_) {
+                // 如果在初始化期间断开了连接，则停止并丢弃
+                receiver->stop();
+                return;
+            }
+            rtp_receiver_ = std::move(receiver);
+            rtp_receiver_->start();
+        }
+
+        std::cout << "[Slave] RTP receiver started.\n" << std::flush;
+
+        // 通知主端已就绪
+        if (signaling_) {
+            signaling_->sendReady();
+        }
+    });
 }
 
 } // namespace strmctrl

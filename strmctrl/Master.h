@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <mutex>
 
 #include "core/Callbacks.h"
 #include "codec/CodecConfig.h"
@@ -186,6 +187,7 @@ private:
     std::unique_ptr<SignalingChannel> signaling_;
     std::unique_ptr<VideoEncoder>     video_encoder_;
     std::unique_ptr<AudioEncoder>     audio_encoder_;
+    std::mutex                        rtp_sender_mutex_;
     std::unique_ptr<RtpSender>        rtp_sender_;
 
     std::string current_slave_ip_;

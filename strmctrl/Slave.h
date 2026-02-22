@@ -2,10 +2,13 @@
 
 #include <memory>
 #include <string>
+#include <mutex>
 
 #include "core/Callbacks.h"
 #include "transport/SignalingChannel.h"
 #include "transport/RtpReceiver.h"
+
+#include <thread>
 
 namespace strmctrl {
 
@@ -139,7 +142,9 @@ private:
     int  rtp_port_  = 11452;
 
     std::unique_ptr<SignalingChannel> signaling_;
+    std::mutex                        rtp_mutex_;
     std::unique_ptr<RtpReceiver>      rtp_receiver_;
+    std::thread                       init_thread_;
 
     MessageCallback    msg_cb_;
     VideoFrameCallback video_cb_;

@@ -9,7 +9,7 @@
  *   4. 接收来自主端的文本消息，并可从控制台向主端发送消息。
  *
  * 用法：
- *   stream_slave.exe <主端IP> [信令端口=11451] [RTP接收端口=11452]
+ *   stream_slave.exe <主端IP> [信令端口=11451] [RTP接收端口段起点=11452]
  *
  * 示例：
  *   stream_slave.exe 192.168.1.100
@@ -143,12 +143,14 @@ int main(int argc, char *argv[])
     {
         int64_t v_count = 0;
         int64_t a_count = 0;
-        while (running.load()) {
+        while (running.load()) 
+        {
             std::unique_lock<std::mutex> lock(queue_mutex);
             queue_cv.wait_for(lock, std::chrono::milliseconds(50),
                               [&]{ return !video_queue.empty() || !audio_queue.empty() || !running.load(); });
 
-            while (!video_queue.empty()) {
+            while (!video_queue.empty()) 
+            {
                 strmctrl::VideoFrame f = std::move(video_queue.front());
                 video_queue.pop();
                 lock.unlock();
@@ -159,7 +161,8 @@ int main(int argc, char *argv[])
                 lock.lock();
             }
 
-            while (!audio_queue.empty()) {
+            while (!audio_queue.empty()) 
+            {
                 strmctrl::AudioFrame f = std::move(audio_queue.front());
                 audio_queue.pop();
                 lock.unlock();

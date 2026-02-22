@@ -128,7 +128,9 @@ bool SignalingChannel::sendMessage(const TextMessage& msg)
 
     if (is_server_) {
         auto clients = server_->getClients();
-        if (clients.empty()) return false;
+        if (clients.empty()) {
+            return false;
+        }
         for (auto& ws : clients) ws->send(raw);
         return true;
     } else {
@@ -207,6 +209,7 @@ void SignalingChannel::dispatchRawMessage(const std::string& raw,
             tm.timestamp_ms = duration_cast<milliseconds>(
                 system_clock::now().time_since_epoch()).count();
             msg_cb_(tm);
+        } else {
         }
     } else if (raw.rfind(kSdpPrefix, 0) == 0) {
         // 内部 SDP 帧

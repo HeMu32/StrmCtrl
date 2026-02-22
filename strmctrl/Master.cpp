@@ -26,8 +26,16 @@ void Master::setRtpPort(int port)         { rtp_port_       = port; }
 void Master::setCodecConfig(const CodecConfig& cfg) { video_cfg_ = cfg; }
 void Master::setAudioConfig(const AudioConfig& cfg) { audio_cfg_ = cfg; has_audio_cfg_ = true; }
 
-void Master::setMessageCallback(MessageCallback cb)    { msg_cb_  = std::move(cb); }
-void Master::setConnectionCallback(ConnectionCallback cb) { conn_cb_ = std::move(cb); }
+void Master::setMessageCallback(MessageCallback cb)
+{
+    msg_cb_ = cb;
+    if (signaling_) signaling_->setMessageCallback(cb);
+}
+
+void Master::setConnectionCallback(ConnectionCallback cb)
+{
+    conn_cb_ = std::move(cb);
+}
 
 // ---------------------------------------------------------------------------
 // 生命周期
@@ -98,7 +106,12 @@ void Master::stop()
 
     if (video_encoder_) { video_encoder_->flush(); video_encoder_->close(); }
     if (audio_encoder_) { audio_encoder_->flush(); audio_encoder_->close(); }
-    if (rtp_sender_)  rtp_sender_->close();
+    
+    {
+        std::lock_guard<std::mutex> lock(rtp_sender_mutex_);
+        if (rtp_sender_)  rtp_sender_->close();
+    }
+    
     if (signaling_) signaling_->stop();
 
     rtp_ready_ = false;
@@ -117,7 +130,9 @@ void Master::pushVideoFrame(const VideoFrame& frame)
 void Master::pushAudioFrame(const AudioFrame& frame)
 {
     if (!audio_encoder_ || !running_ || !rtp_ready_) return;
-    audio_encoder_->encode(frame);
+    if (!audio_encoder_->encode(frame)) {
+        std::cerr << "[Master] audio encode failed: " << audio_encoder_->lastError() << "\n";
+    }
 }
 
 void Master::sendMessage(const std::string& text)
@@ -156,9 +171,12 @@ void Master::onSlaveDisconnected()
 {
     current_slave_ip_.clear();
     rtp_ready_ = false;
-    if (rtp_sender_) {
-        rtp_sender_->close();
-        rtp_sender_.reset();
+    {
+        std::lock_guard<std::mutex> lock(rtp_sender_mutex_);
+        if (rtp_sender_) {
+            rtp_sender_->close();
+            rtp_sender_.reset();
+        }
     }
     std::cout << "[Master] Slave disconnected\n";
 }
@@ -167,13 +185,13 @@ void Master::onSdpRequest()
 {
     std::cout << "[Master] Received SDP:REQUEST, preparing RTP sender...\n";
 
-    rtp_sender_ = std::make_unique<RtpSender>();
+    std::unique_ptr<RtpSender> sender = std::make_unique<RtpSender>();
     // 同机调试时，显式给发送端分配远离接收端口的本地端口，避免 bind 冲突。
     // 例如 rtp_port_=11452 时，本地发送端从 11552 开始分配：
     //   流0: 11552/11553, 流1: 11554/11555 ...
-    rtp_sender_->setLocalPortBase(rtp_port_ + 100);
+    sender->setLocalPortBase(rtp_port_ + 100);
 
-    int v_idx = rtp_sender_->addStream(current_slave_ip_, rtp_port_, video_encoder_->codecContext());
+    int v_idx = sender->addStream(current_slave_ip_, rtp_port_, video_encoder_->codecContext());
     if (v_idx < 0) {
         std::cerr << "[Master] Failed to add video stream to RtpSender\n";
         return;
@@ -182,37 +200,52 @@ void Master::onSdpRequest()
     int a_idx = -1;
     if (audio_encoder_) {
         // 音频 RTP 用 rtp_port_ + 2，为视频 RTP/RTCP(+0/+1) 和音频 RTCP(+3) 留出空间
-        a_idx = rtp_sender_->addStream(current_slave_ip_, rtp_port_ + 2, audio_encoder_->codecContext());
+        a_idx = sender->addStream(current_slave_ip_, rtp_port_ + 2, audio_encoder_->codecContext());
         if (a_idx < 0) {
             std::cerr << "[Master] Failed to add audio stream to RtpSender\n";
             return;
         }
     }
 
-    if (!rtp_sender_->open()) {
-        std::cerr << "[Master] RtpSender::open failed: " << rtp_sender_->lastError() << "\n";
+    if (!sender->open()) {
+        std::cerr << "[Master] RtpSender::open failed: " << sender->lastError() << "\n";
         return;
     }
 
     // 绑定编码器输出到发送器
     video_encoder_->setPacketCallback([this, v_idx](AVPacket* pkt) {
-        rtp_sender_->sendPacket(pkt, v_idx);
+        std::lock_guard<std::mutex> lock(rtp_sender_mutex_);
+        if (rtp_sender_) {
+            rtp_sender_->sendPacket(pkt, v_idx);
+        }
     });
 
     if (audio_encoder_) {
         audio_encoder_->setPacketCallback([this, a_idx](AVPacket* pkt) {
-            rtp_sender_->sendPacket(pkt, a_idx);
+            std::lock_guard<std::mutex> lock(rtp_sender_mutex_);
+            if (rtp_sender_) {
+                rtp_sender_->sendPacket(pkt, a_idx);
+            }
         });
     }
 
-    std::string sdp = rtp_sender_->generateSdp();
+    std::string sdp = sender->generateSdp();
     if (sdp.empty()) {
         std::cerr << "[Master] Failed to generate SDP\n";
         return;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(rtp_sender_mutex_);
+        rtp_sender_ = std::move(sender);
+    }
+
     signaling_->sendSdp(sdp);
     std::cout << "[Master] Sent SDP offer to slave\n";
+    
+    // We can start streaming immediately so that the slave's avformat_find_stream_info 
+    // can receive packets and not block.
+    rtp_ready_ = true;
 }
 
 void Master::onReady()
