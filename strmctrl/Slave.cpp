@@ -97,8 +97,15 @@ void Slave::disconnect()
 {
     connected_ = false;
 
-    if (init_thread_.joinable()) {
-        init_thread_.join();
+    std::thread old_thread;
+    {
+        std::lock_guard<std::mutex> lock(init_mutex_);
+        if (init_thread_.joinable()) {
+            old_thread = std::move(init_thread_);
+        }
+    }
+    if (old_thread.joinable()) {
+        old_thread.join();
     }
 
     {
@@ -156,12 +163,20 @@ void Slave::onDisconnected()
 
 void Slave::onSdpReceived(const std::string& sdp)
 {
-    if (init_thread_.joinable()) {
-        init_thread_.join();
+    if (!connected_) return;
+
+    std::thread old_thread;
+    {
+        std::lock_guard<std::mutex> lock(init_mutex_);
+        if (init_thread_.joinable()) {
+            old_thread = std::move(init_thread_);
+        }
+    }
+    if (old_thread.joinable()) {
+        old_thread.join();
     }
 
-    // 启动一个分离的线程来初始化 RTP 接收，避免阻塞信令通道（WebSocket）的工作线程
-    init_thread_ = std::thread([this, sdp]() {
+    std::thread new_thread([this, sdp]() {
         std::cout << "[Slave] Received SDP offer, initializing RTP receiver in background thread...\n" << std::flush;
 
         std::unique_ptr<RtpReceiver> receiver = std::make_unique<RtpReceiver>();
@@ -197,6 +212,11 @@ void Slave::onSdpReceived(const std::string& sdp)
             signaling_->sendReady();
         }
     });
+
+    {
+        std::lock_guard<std::mutex> lock(init_mutex_);
+        init_thread_ = std::move(new_thread);
+    }
 }
 
 } // namespace strmctrl

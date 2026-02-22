@@ -22,6 +22,11 @@ static std::string avErrStrRecv(int err)
     return std::string(buf);
 }
 
+struct TimeoutContext {
+    std::chrono::steady_clock::time_point start;
+    int timeout_ms;
+};
+
 // ---------------------------------------------------------------------------
 // 构造 / 析构
 // ---------------------------------------------------------------------------
@@ -32,6 +37,10 @@ RtpReceiver::~RtpReceiver()
 {
     stop();
     if (fmt_ctx_) {
+        if (fmt_ctx_->interrupt_callback.opaque) {
+            delete static_cast<TimeoutContext*>(fmt_ctx_->interrupt_callback.opaque);
+            fmt_ctx_->interrupt_callback.opaque = nullptr;
+        }
         avformat_close_input(&fmt_ctx_);
     }
 }
@@ -91,7 +100,7 @@ bool RtpReceiver::openWithSdp(const std::string& sdp)
     }
 
     std::cout << "[RtpReceiver] SDP written to: " << sdp_path << "\n"
-              << "--- SDP BEGIN ---\n" << sdp << "\n--- SDP END ---\n";
+              << "--- SDP BEGIN ---\n" << sdp << "\n--- SDP END ---\n" << std::flush;
 
     return openWithUrl(sdp_path, -1 /* 由 SDP 指定端口，传 -1 表示 URL 模式 */);
 }
@@ -99,6 +108,10 @@ bool RtpReceiver::openWithSdp(const std::string& sdp)
 bool RtpReceiver::openWithUrl(const std::string& host, int port)
 {
     if (fmt_ctx_) {
+        if (fmt_ctx_->interrupt_callback.opaque) {
+            delete static_cast<TimeoutContext*>(fmt_ctx_->interrupt_callback.opaque);
+            fmt_ctx_->interrupt_callback.opaque = nullptr;
+        }
         avformat_close_input(&fmt_ctx_);
         fmt_ctx_ = nullptr;
     }
@@ -114,6 +127,18 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
         return false;
     }
 
+    // Set interrupt callback to timeout if no data arrives
+    TimeoutContext* tctx = new TimeoutContext{std::chrono::steady_clock::now(), 3000}; // 3s timeout
+    fmt_ctx_->interrupt_callback.callback = [](void* opaque) -> int {
+        auto* ctx = static_cast<TimeoutContext*>(opaque);
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->start).count() > ctx->timeout_ms) {
+            return 1; // 1 means interrupt
+        }
+        return 0; // 0 means continue
+    };
+    fmt_ctx_->interrupt_callback.opaque = tctx;
+
     // 必须设置 protocol_whitelist，否则 sdp 无法打开 rtp/udp
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "protocol_whitelist", "file,crypto,data,rtp,udp", 0);
@@ -122,6 +147,9 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
     // 这不影响后续解码。
     av_dict_set(&opts, "analyzeduration", "500000", 0);
     av_dict_set(&opts, "probesize", "1048576", 0);
+    // 设置超时以防止挂起
+    av_dict_set(&opts, "timeout", "1000000", 0); // 1秒
+    av_dict_set(&opts, "rw_timeout", "1000000", 0); // 1秒
 
     std::string url;
     const AVInputFormat* in_fmt = nullptr;
@@ -183,6 +211,11 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
         // last_error_ may already contain the log appended above
         if (last_error_.empty())
             last_error_ = "avformat_open_input(" + url + "): " + avErrStrRecv(ret);
+        
+        if (fmt_ctx_->interrupt_callback.opaque) {
+            delete static_cast<TimeoutContext*>(fmt_ctx_->interrupt_callback.opaque);
+            fmt_ctx_->interrupt_callback.opaque = nullptr;
+        }
         avformat_free_context(fmt_ctx_);
         fmt_ctx_ = nullptr;
         return false;
@@ -195,6 +228,13 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
         // 但只要流被创建了，后续收到 SPS/PPS 依然可以解码。
         std::cerr << "[RtpReceiver] Warning: avformat_find_stream_info returned "
                   << ret << " (" << avErrStrRecv(ret) << "). Continuing anyway.\n";
+    }
+
+    // Disable the timeout callback now that stream info is probed
+    if (fmt_ctx_->interrupt_callback.opaque) {
+        delete static_cast<TimeoutContext*>(fmt_ctx_->interrupt_callback.opaque);
+        fmt_ctx_->interrupt_callback.opaque = nullptr;
+        fmt_ctx_->interrupt_callback.callback = nullptr;
     }
 
     // 遍历流，初始化解码器

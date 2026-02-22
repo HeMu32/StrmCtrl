@@ -245,6 +245,62 @@ void test_AudioStream_Delivery() {
     fixture.slave_->setAudioFrameCallback(nullptr);
 }
 
+// ---------------------------------------------------------------------------
+// 5. Robustness Tests
+// ---------------------------------------------------------------------------
+
+void test_Robustness_PushBeforeConnect() {
+    StrmCtrlTestSuite fixture;
+    fixture.master_->setCodecConfig(CodecConfig::makeOpenH264(640, 480, 30, 500));
+    fixture.master_->setAudioConfig(AudioConfig::makeAAC(48000, 2, 64000));
+    ASSERT_TRUE(fixture.master_->start());
+
+    for (int i = 0; i < 50; ++i) {
+        fixture.master_->pushVideoFrame(test::createDummyVideoFrame(640, 480, AV_PIX_FMT_YUV420P));
+        fixture.master_->pushAudioFrame(test::createDummyAudioFrame(48000, 2));
+        std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_TRUE(true);
+}
+
+void test_Robustness_RapidReconnect() {
+    StrmCtrlTestSuite fixture;
+    ASSERT_TRUE(fixture.master_->start());
+
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_TRUE(fixture.slave_->connect("127.0.0.1", fixture.signaling_port_, fixture.rtp_port_));
+        std::this_thread::sleep_for(150ms);
+        fixture.slave_->disconnect();
+        std::this_thread::sleep_for(50ms);
+    }
+    ASSERT_TRUE(true);
+}
+
+void test_Robustness_InvalidAddress() {
+    StrmCtrlTestSuite fixture;
+    
+    std::atomic<bool> failed = false;
+    fixture.slave_->setConnectionCallback([&](bool connected, const std::string&) {
+        if (!connected) failed = true;
+    });
+
+    fixture.slave_->connect("127.0.0.1", fixture.signaling_port_ + 999, fixture.rtp_port_);
+    
+    for (int i = 0; i < 50; ++i) {
+        if (failed) break;
+        std::this_thread::sleep_for(100ms);
+    }
+    
+    ASSERT_TRUE(failed);
+    fixture.slave_->setConnectionCallback(nullptr);
+}
+
+void test_Robustness_InvalidCodecConfig() {
+    StrmCtrlTestSuite fixture;
+    fixture.master_->setCodecConfig(CodecConfig::makeOpenH264(0, 0, 30, 500));
+    ASSERT_FALSE(fixture.master_->start());
+}
+
 void run_all_tests() {
     std::cout << "[==========] Running tests.\n" << std::flush;
 
@@ -268,6 +324,18 @@ void run_all_tests() {
 
     try { test_AudioStream_Delivery(); std::cout << "[       OK ] AudioStream_Delivery\n" << std::flush; num_tests_passed++; } 
     catch (const std::exception& e) { std::cout << "[  FAILED  ] AudioStream_Delivery: " << e.what() << "\n" << std::flush; num_tests_failed++; }
+
+    try { test_Robustness_PushBeforeConnect(); std::cout << "[       OK ] Robustness_PushBeforeConnect\n" << std::flush; num_tests_passed++; } 
+    catch (const std::exception& e) { std::cout << "[  FAILED  ] Robustness_PushBeforeConnect: " << e.what() << "\n" << std::flush; num_tests_failed++; }
+
+    try { test_Robustness_RapidReconnect(); std::cout << "[       OK ] Robustness_RapidReconnect\n" << std::flush; num_tests_passed++; } 
+    catch (const std::exception& e) { std::cout << "[  FAILED  ] Robustness_RapidReconnect: " << e.what() << "\n" << std::flush; num_tests_failed++; }
+
+    try { test_Robustness_InvalidAddress(); std::cout << "[       OK ] Robustness_InvalidAddress\n" << std::flush; num_tests_passed++; } 
+    catch (const std::exception& e) { std::cout << "[  FAILED  ] Robustness_InvalidAddress: " << e.what() << "\n" << std::flush; num_tests_failed++; }
+
+    try { test_Robustness_InvalidCodecConfig(); std::cout << "[       OK ] Robustness_InvalidCodecConfig\n" << std::flush; num_tests_passed++; } 
+    catch (const std::exception& e) { std::cout << "[  FAILED  ] Robustness_InvalidCodecConfig: " << e.what() << "\n" << std::flush; num_tests_failed++; }
 
     std::cout << "[==========] Tests completed.\n" << std::flush;
     std::cout << "[  PASSED  ] " << num_tests_passed << " tests.\n";

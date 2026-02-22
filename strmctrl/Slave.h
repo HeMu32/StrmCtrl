@@ -144,6 +144,7 @@ private:
     std::unique_ptr<SignalingChannel> signaling_;
     std::mutex                        rtp_mutex_;
     std::unique_ptr<RtpReceiver>      rtp_receiver_;
+    std::mutex                        init_mutex_;
     std::thread                       init_thread_;
 
     MessageCallback    msg_cb_;
