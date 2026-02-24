@@ -335,5 +335,37 @@ Print a clear error and exit (or disable affected features) if the check returns
 
 ## Known Issues
 
-*(Currently no known critical issues. The previous `stream_master` looping instability, `libopenh264` encoding failures, and localhost RTP bind-collision (WSAEADDRINUSE) on multi-stream setups have all been resolved.)*
+*(Currently no known critical issues. The previous `stream_master` looping instability, `libopenh264` encoding failures, localhost RTP bind-collision (WSAEADDRINUSE) on multi-stream setups, and FFmpeg blocking hangs during rapid reconnects have all been resolved.)*
+
+---
+
+## C++ Threading & FFmpeg Robustness Best Practices (Lessons Learned)
+
+When making further modifications to `strmctrl`, strictly adhere to these robustness rules discovered during stress testing:
+
+### 1. FFmpeg Network Blocking & Timeout (`interrupt_callback`)
+- **Issue**: `avformat_open_input` and `avformat_find_stream_info` can block indefinitely when opening SDP/RTP streams if no UDP packets arrive (e.g., rapid connection teardowns before the sender pushes data).
+- **Rule**: Never rely solely on AVOptions like `timeout` or `rw_timeout` for RTP/UDP. Always implement a custom `interrupt_callback` on the `AVFormatContext` before calling open/find functions. 
+- **Implementation**: Provide a time-based or atomic-flag-based callback that returns `1` to force FFmpeg to abort the blocking I/O operation. Remember to clear (`nullptr`) the callback and delete its opaque context payload once the stream is successfully probed and before entering the main reading loop.
+
+### 2. Thread Synchronization During Rapid Reconnects
+- **Issue**: Async callbacks (like `onSdpReceived`) often spawn detached or managed background threads (`init_thread_`) to handle blocking FFmpeg initializations. If a teardown (`disconnect()`) is called concurrently, multiple threads might attempt to `join()` the same `std::thread` handle, causing `std::system_error` (Resource deadlock would occur) or application crashes.
+- **Rule**: All modifications to `std::thread` members must be protected by a dedicated `std::mutex` (e.g., `init_mutex_`).
+- **Implementation**: Never `join()` a thread while holding the mutex. Instead, move the thread handle out of the shared scope, release the lock, and then join:
+  ```cpp
+  std::thread old_thread;
+  {
+      std::lock_guard<std::mutex> lock(init_mutex_);
+      if (init_thread_.joinable()) {
+          old_thread = std::move(init_thread_);
+      }
+  }
+  if (old_thread.joinable()) {
+      old_thread.join();
+  }
+  ```
+
+### 3. Connection Lifecycles & Data Races
+- **Issue**: Callbacks triggered by third-party libraries (IXWebSocket) run on internal dispatch threads.
+- **Rule**: When destroying or resetting the signaling channel, explicitly clear its callbacks (e.g., `signaling_->setConnectionCallback(nullptr);`) *before* calling `stop()` or `reset()`. This prevents reentrant or concurrent `onDisconnected` events from firing while the parent object is already partially destructed.
 ```
