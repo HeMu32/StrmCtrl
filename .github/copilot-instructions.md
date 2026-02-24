@@ -125,6 +125,13 @@ The full handshake must complete before any RTP packets are sent. **Never skip o
       └─ bindEncoderToSender()                          ← wires PacketCallbacks
       └─ generateSdp() + signaling_->sendSdp(sdp)
 
+    **Note**: although the slave may include an `fps` field in its
+    request, the master *always* uses its own configured frame rate when
+    constructing `video_codec_ctx`.  The `fps` value in the returned SDP
+    will therefore match the master's configuration.  This invariant is
+    enforced via a runtime check in `onSdpRequest()` and is critical to
+    avoid RTP timestamp discontinuities.
+
 4. Slave receives "SDP:<sdp>"
       └─ RtpReceiver::openWithSdp(sdp)
             ├─ writes SDP to %TEMP%\strmctrl_recv.sdp   (binary, CRLF normalized)

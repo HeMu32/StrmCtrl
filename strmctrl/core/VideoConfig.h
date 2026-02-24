@@ -83,9 +83,18 @@ inline CodecConfig applyVideoRequestWithCaps(const CodecConfig& base,
     if (req.height.has_value()) {
         result.height = std::min(*req.height, 1920);
     }
-    if (req.fps.has_value()) {
-        result.fps = std::min(*req.fps, 60);
-    }
+    // NOTE: fps is *not* taken from the request.  the master always
+    // enforces its own configured frame rate; incoming requests may
+    // suggest something but we ignore it here.  this keeps the
+    // encoder time_base consistent and prevents PTS/DTS discontinuities
+    // when downstream code naively assumes the encoder fps is fixed.
+    // (The actual override happens in Master::onSdpRequest.)
+    //
+    // We still expose req.fps to callers via the negotiation protocol so
+    // that slaves can know what they asked for, but the master reply will
+    // always echo its own fps value.
+    //
+    // Assertion (documented elsewhere): result.fps == base.fps
     return result;
 }
 

@@ -466,6 +466,7 @@ int main(int argc, char **argv)
 
                     // 更新计数器
                     if (frame->nb_samples > 0) out_audio_pts += frame->nb_samples;
+
                     else out_audio_pts += 1024; // fallback
 
                     master.pushAudioFrame(strmctrl::AudioFrame(frame));
