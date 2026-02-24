@@ -9,6 +9,16 @@ Build system: CMake + MinGW-w64 on Windows.
 
 ---
 
+## Code Formatting
+
+- The project follows **Visual Studio / Microsoft coding style**. Use spaces (typically
+  4 per indentation level) rather than tabs, keep opening braces on the same line as the
+  statement, and match the surrounding formatting in existing source files. Running a
+  configured `clang-format`/`astyle` with an MSVC profile is encouraged if available.
+
+
+---
+
 ## Repository Layout
 
 ```
@@ -368,4 +378,73 @@ When making further modifications to `strmctrl`, strictly adhere to these robust
 ### 3. Connection Lifecycles & Data Races
 - **Issue**: Callbacks triggered by third-party libraries (IXWebSocket) run on internal dispatch threads.
 - **Rule**: When destroying or resetting the signaling channel, explicitly clear its callbacks (e.g., `signaling_->setConnectionCallback(nullptr);`) *before* calling `stop()` or `reset()`. This prevents reentrant or concurrent `onDisconnected` events from firing while the parent object is already partially destructed.
+
+---
+
+## Testing Framework & Best Practices (CTest & MiniTest)
+
+We use CMake's CTest alongside a custom lightweight testing header (`test/MiniTest.h`) to avoid heavy third-party dependencies like GTest. 
+
+### Writing Tests
+- All test files reside in the `test/` directory.
+- Define test cases as standard `void` functions (e.g., `void test_MyFeature();`) or using the `TEST(Suite, Name)` macro if included.
+- **Assertions**: `MiniTest.h` provides macros that throw `std::runtime_error` on failure. These include:
+  - `ASSERT_TRUE(condition)` / `EXPECT_TRUE(condition)`
+  - `ASSERT_FALSE(condition)` / `EXPECT_FALSE(condition)`
+  - `ASSERT_EQ(val1, val2)` / `EXPECT_EQ(val1, val2)`
+- Because exceptions are used for assertions, wrapping assertions within separate threads (e.g., inside an IXWebSocket callback or FFmpeg decode thread) requires care. **Exceptions thrown in background threads will not automatically fail the test in the main thread and will terminate the program abruptly.**
+
+### Asynchronous & Multithreaded Testing (The "Wait-and-Poll" Pattern)
+Because network and AV streams are asynchronous, follow these conventions when verifying state:
+1. **Use Atomic Flags**: Use `std::atomic<bool>` or thread-safe structs to capture async conditions inside callbacks.
+2. **Do Not Block Forever**: Always use finite polling loops with `std::this_thread::sleep_for()` to wait for success. Never use `while(!flag) {}` without a timeout.
+3. **Assert at the End**: Let the main thread poll until a timeout or success is achieved, then call `ASSERT_TRUE(flag)` in the *main thread*.
+4. **Cleanup Handlers**: Before a test function exits (or when a test fixture destructs), be sure to unregister callbacks (e.g., `slave_->setVideoFrameCallback(nullptr)`) to prevent dangling references if the underlying network connection is slow to close.
+
+**Example Asynchronous Test Pattern**:
+```cpp
+void test_AsyncMessage() {
+    StrmCtrlTestSuite fixture;
+    std::atomic<bool> msg_received = false;
+    
+    // Set callback (runs on a background thread)
+    fixture.slave_->setMessageCallback([&](const TextMessage& msg) {
+        if (msg.content == "Hello") msg_received = true;
+    });
+
+    fixture.master_->start();
+    fixture.slave_->connect("127.0.0.1", fixture.signaling_port_, fixture.rtp_port_);
+    
+    // Trigger action
+    fixture.master_->sendMessage("Hello");
+
+    // Finite wait-and-poll loop
+    for (int i = 0; i < 50; ++i) { // Max 5000ms wait
+        if (msg_received) break;
+        std::this_thread::sleep_for(100ms);
+    }
+    
+    // Main thread assertion
+    ASSERT_TRUE(msg_received);
+    fixture.slave_->setMessageCallback(nullptr); // Cleanup
+}
+```
+
+### Setup & Teardown Assumptions
+- **Ports**: Avoid hardcoding port `11451`/`11452` in the test suite as rapid successive test runs might encounter `WSAEADDRINUSE` if the OS hasn't reclaimed the port (`TIME_WAIT`). Instead, use `test::PortAllocator::allocate()` from `test/TestUtils.h` which returns unique, incrementing port numbers for each test fixture.
+- **Fixture Class**: Inherit or instantiate `StrmCtrlTestSuite` (defined in `StrmCtrlTest.cpp`) inside your test function to automatically get allocated isolated ports, initialized `master_`/`slave_` pointers, and safe teardown via its destructor (`slave_->disconnect()`, `master_->stop()`).
+
+### Adding Tests to the Runner
+New tests must be explicitly added to the `void run_all_tests()` block at the bottom of `test/StrmCtrlTest.cpp`:
+```cpp
+try { 
+    test_MyFeature(); 
+    std::cout << "[       OK ] MyFeature\n" << std::flush; 
+    num_tests_passed++; 
+} catch (const std::exception& e) { 
+    std::cout << "[  FAILED  ] MyFeature: " << e.what() << "\n" << std::flush; 
+    num_tests_failed++; 
+}
+```
+If you add robustness tests that push edge boundaries, categorize them under the `// 5. Robustness Tests` section.
 ```
