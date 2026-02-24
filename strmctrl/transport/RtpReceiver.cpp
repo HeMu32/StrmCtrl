@@ -5,12 +5,14 @@
 #include <iostream>
 #include <sstream>
 
-extern "C" {
+extern "C"
+{
 #include <libavutil/error.h>
 #include <libavutil/opt.h>
 }
 
-namespace strmctrl {
+namespace strmctrl
+{
 
 // ---------------------------------------------------------------------------
 // 辅助
@@ -31,14 +33,16 @@ RtpReceiver::RtpReceiver() = default;
 RtpReceiver::~RtpReceiver()
 {
     stop();
-    if (fmt_ctx_) {
+    if (fmt_ctx_)
+    {
         // 清理 interrupt callback
         fmt_ctx_->interrupt_callback.callback = nullptr;
         fmt_ctx_->interrupt_callback.opaque = nullptr;
         avformat_close_input(&fmt_ctx_);
     }
     // Delete TimeoutContext if allocated
-    if (timeout_ctx_) {
+    if (timeout_ctx_)
+    {
         delete timeout_ctx_;
         timeout_ctx_ = nullptr;
     }
@@ -59,7 +63,7 @@ void RtpReceiver::setAudioFrameCallback(AudioFrameCallback cb)
     audio_cb_ = std::move(cb);
 }
 
-void RtpReceiver::setErrorCallback(std::function<void(const std::string&)> cb)
+void RtpReceiver::setErrorCallback(std::function<void(const std::string &)> cb)
 {
     error_cb_ = std::move(cb);
 }
@@ -68,13 +72,14 @@ void RtpReceiver::setErrorCallback(std::function<void(const std::string&)> cb)
 // 生命周期
 // ---------------------------------------------------------------------------
 
-bool RtpReceiver::openWithSdp(const std::string& sdp)
+bool RtpReceiver::openWithSdp(const std::string &sdp)
 {
     // FFmpeg 通过 "data URI" 方式或临时 .sdp 文件加载 SDP。
     // 这里将 SDP 写入临时文件，再以 "sdp" 格式打开。
     // Windows 下使用 %TEMP% 目录。
-    const char* tmp_dir = std::getenv("TEMP");
-    if (!tmp_dir) tmp_dir = ".";
+    const char *tmp_dir = std::getenv("TEMP");
+    if (!tmp_dir)
+        tmp_dir = ".";
     const std::string sdp_path = std::string(tmp_dir) + "\\strmctrl_recv.sdp";
 
     {
@@ -82,8 +87,10 @@ bool RtpReceiver::openWithSdp(const std::string& sdp)
         // WebSocket 传输可能把 \r\n 变成 \n，写文件前统一规范化。
         std::string sdp_normalized;
         sdp_normalized.reserve(sdp.size() + 32);
-        for (std::size_t i = 0; i < sdp.size(); ++i) {
-            if (sdp[i] == '\n' && (i == 0 || sdp[i - 1] != '\r')) {
+        for (std::size_t i = 0; i < sdp.size(); ++i)
+        {
+            if (sdp[i] == '\n' && (i == 0 || sdp[i - 1] != '\r'))
+            {
                 sdp_normalized += '\r';
             }
             sdp_normalized += sdp[i];
@@ -91,7 +98,8 @@ bool RtpReceiver::openWithSdp(const std::string& sdp)
 
         // 以二进制模式写入，防止 Windows 再次转换换行符
         std::ofstream f(sdp_path, std::ios::trunc | std::ios::binary);
-        if (!f) {
+        if (!f)
+        {
             last_error_ = "Cannot write temporary SDP file: " + sdp_path;
             return false;
         }
@@ -99,22 +107,26 @@ bool RtpReceiver::openWithSdp(const std::string& sdp)
     }
 
     std::cout << "[RtpReceiver] SDP written to: " << sdp_path << "\n"
-              << "--- SDP BEGIN ---\n" << sdp << "\n--- SDP END ---\n" << std::flush;
+                << "--- SDP BEGIN ---\n"
+                << sdp << "\n--- SDP END ---\n"
+                << std::flush;
 
     return openWithUrl(sdp_path, -1 /* 由 SDP 指定端口，传 -1 表示 URL 模式 */);
 }
 
-bool RtpReceiver::openWithUrl(const std::string& host, int port)
+bool RtpReceiver::openWithUrl(const std::string &host, int port)
 {
-    if (fmt_ctx_) {
+    if (fmt_ctx_)
+    {
         // Clear interrupt first
         fmt_ctx_->interrupt_callback.callback = nullptr;
         fmt_ctx_->interrupt_callback.opaque = nullptr;
         avformat_close_input(&fmt_ctx_);
         fmt_ctx_ = nullptr;
     }
-    
-    if (timeout_ctx_) {
+
+    if (timeout_ctx_)
+    {
         delete timeout_ctx_;
         timeout_ctx_ = nullptr;
     }
@@ -125,7 +137,8 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
     audio_stream_idx_ = -1;
 
     fmt_ctx_ = avformat_alloc_context();
-    if (!fmt_ctx_) {
+    if (!fmt_ctx_)
+    {
         last_error_ = "avformat_alloc_context failed";
         return false;
     }
@@ -136,14 +149,17 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
     timeout_ctx_->last_activity_ts.store(now_ms);
     timeout_ctx_->timeout_ms = 5000; // 5s timeout
 
-    fmt_ctx_->interrupt_callback.callback = [](void* opaque) -> int {
-        auto* ctx = static_cast<TimeoutContext*>(opaque);
-        if (!ctx) return 0;
-        
+    fmt_ctx_->interrupt_callback.callback = [](void *opaque) -> int
+    {
+        auto *ctx = static_cast<TimeoutContext *>(opaque);
+        if (!ctx)
+            return 0;
+
         auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         int64_t diff = now_ms - ctx->last_activity_ts.load();
-        
-        if (diff > ctx->timeout_ms) {
+
+        if (diff > ctx->timeout_ms)
+        {
             // Uncomment to debug timeouts:
             // std::cerr << "[RtpReceiver] Interrupt callback timed out! diff=" << diff << "ms\n";
             return 1; // Interrupt
@@ -153,32 +169,36 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
     fmt_ctx_->interrupt_callback.opaque = timeout_ctx_;
 
     // 必须设置 protocol_whitelist，否则 sdp 无法打开 rtp/udp
-    AVDictionary* opts = nullptr;
+    AVDictionary *opts = nullptr;
     av_dict_set(&opts, "protocol_whitelist", "file,crypto,data,rtp,udp", 0);
     // 探测时间：500ms 足以接收首帧 SPS/PPS 并让解码器自配置。
     av_dict_set(&opts, "analyzeduration", "500000", 0);
-    av_dict_set(&opts, "probesize", "5000000", 0); 
+    av_dict_set(&opts, "probesize", "5000000", 0);
     // UDP/RTP 接收缓冲与过载容忍
-    av_dict_set(&opts, "buffer_size", "5000000", 0); 
+    av_dict_set(&opts, "buffer_size", "5000000", 0);
     av_dict_set(&opts, "fifo_size", "5000000", 0);
     av_dict_set(&opts, "overrun_nonfatal", "1", 0);
     // 设置长时间 socket 超时作为第二道防线
-    av_dict_set(&opts, "timeout", "5000000", 0); 
-    av_dict_set(&opts, "rw_timeout", "5000000", 0); 
+    av_dict_set(&opts, "timeout", "5000000", 0);
+    av_dict_set(&opts, "rw_timeout", "5000000", 0);
 
     std::string url;
-    const AVInputFormat* in_fmt = nullptr;
+    const AVInputFormat *in_fmt = nullptr;
 
-    if (port == -1) {
+    if (port == -1)
+    {
         // SDP 模式：host 实际上是 sdp 文件路径
         url = host;
         in_fmt = av_find_input_format("sdp");
-        if (!in_fmt) {
+        if (!in_fmt)
+        {
             last_error_ = "av_find_input_format('sdp') failed";
             av_dict_free(&opts);
             return false;
         }
-    } else {
+    }
+    else
+    {
         // 直接 RTP 模式
         url = "rtp://" + host + ":" + std::to_string(port);
     }
@@ -197,7 +217,8 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
 
     static thread_local std::string s_ffmpeg_log;
     // capture callback (no captures so convertible to function pointer)
-    auto capture_cb = [](void* /*ptr*/, int level, const char* fmt, va_list vl) {
+    auto capture_cb = [](void * /*ptr*/, int level, const char *fmt, va_list vl)
+    {
         char buf[1024];
         vsnprintf(buf, sizeof(buf), fmt, vl);
         s_ffmpeg_log += buf;
@@ -214,21 +235,25 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
     av_log_set_callback(av_log_default_callback);
 
     // if the open failed, add any captured log text to last_error_
-    if (ret < 0 && !s_ffmpeg_log.empty()) {
-        if (!last_error_.empty()) last_error_ += " | ";
+    if (ret < 0 && !s_ffmpeg_log.empty())
+    {
+        if (!last_error_.empty())
+            last_error_ += " | ";
         last_error_ += "ffmpeg log: ";
         last_error_ += s_ffmpeg_log;
     }
-    
+
     av_dict_free(&opts);
 
-    if (ret < 0) {
+    if (ret < 0)
+    {
         // last_error_ may already contain the log appended above
         if (last_error_.empty())
             last_error_ = "avformat_open_input(" + url + "): " + avErrStrRecv(ret);
-        
-        if (fmt_ctx_->interrupt_callback.opaque) {
-            delete static_cast<TimeoutContext*>(fmt_ctx_->interrupt_callback.opaque);
+
+        if (fmt_ctx_->interrupt_callback.opaque)
+        {
+            delete static_cast<TimeoutContext *>(fmt_ctx_->interrupt_callback.opaque);
             fmt_ctx_->interrupt_callback.opaque = nullptr;
         }
         avformat_free_context(fmt_ctx_);
@@ -238,14 +263,16 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
 
     // 查找流信息
     ret = avformat_find_stream_info(fmt_ctx_, nullptr);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         std::cerr << "[RtpReceiver] Warning: avformat_find_stream_info returned "
-                  << ret << " (" << avErrStrRecv(ret) << "). Continuing anyway.\n";
+                    << ret << " (" << avErrStrRecv(ret) << "). Continuing anyway.\n";
     }
 
     // 更新 interrupt callback 的超时
     // 这里我们不删除它，而是更新时间戳，这样后续 workerThread 可以持续使用它
-    if (timeout_ctx_) {
+    if (timeout_ctx_)
+    {
         // 更新最后活动时间
         auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         timeout_ctx_->last_activity_ts.store(now_ms);
@@ -254,18 +281,24 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
     }
 
     // 遍历流，初始化解码器
-    for (unsigned int i = 0; i < fmt_ctx_->nb_streams; ++i) {
-        AVStream* stream = fmt_ctx_->streams[i];
-        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_idx_ == -1) {
+    for (unsigned int i = 0; i < fmt_ctx_->nb_streams; ++i)
+    {
+        AVStream *stream = fmt_ctx_->streams[i];
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_idx_ == -1)
+        {
             video_stream_idx_ = i;
-            if (!video_decoder_.openWithParameters(stream->codecpar)) {
+            if (!video_decoder_.openWithParameters(stream->codecpar))
+            {
                 last_error_ = "VideoDecoder open failed: " + video_decoder_.lastError();
                 return false;
             }
             std::cout << "[RtpReceiver] Found Video Stream: index=" << i << "\n";
-        } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_idx_ == -1) {
+        }
+        else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_idx_ == -1)
+        {
             audio_stream_idx_ = i;
-            if (!audio_decoder_.openWithParameters(stream->codecpar)) {
+            if (!audio_decoder_.openWithParameters(stream->codecpar))
+            {
                 last_error_ = "AudioDecoder open failed: " + audio_decoder_.lastError();
                 return false;
             }
@@ -273,7 +306,8 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
         }
     }
 
-    if (video_stream_idx_ == -1 && audio_stream_idx_ == -1) {
+    if (video_stream_idx_ == -1 && audio_stream_idx_ == -1)
+    {
         last_error_ = "No video or audio stream found in input";
         return false;
     }
@@ -283,8 +317,10 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
 
 void RtpReceiver::start()
 {
-    if (running_.load()) return;
-    if (!fmt_ctx_) return;
+    if (running_.load())
+        return;
+    if (!fmt_ctx_)
+        return;
 
     running_.store(true);
     thread_ = std::thread(&RtpReceiver::workerThread, this);
@@ -292,10 +328,12 @@ void RtpReceiver::start()
 
 void RtpReceiver::stop()
 {
-    if (!running_.load()) return;
+    if (!running_.load())
+        return;
 
     running_.store(false);
-    if (thread_.joinable()) {
+    if (thread_.joinable())
+    {
         thread_.join();
     }
 }
@@ -306,9 +344,11 @@ void RtpReceiver::stop()
 
 void RtpReceiver::workerThread()
 {
-    AVPacket* pkt = av_packet_alloc();
-    if (!pkt) {
-        if (error_cb_) error_cb_("av_packet_alloc failed");
+    AVPacket *pkt = av_packet_alloc();
+    if (!pkt)
+    {
+        if (error_cb_)
+            error_cb_("av_packet_alloc failed");
         return;
     }
 
@@ -318,16 +358,19 @@ void RtpReceiver::workerThread()
     int64_t consecutive_errors = 0;
     auto last_packet_time = std::chrono::steady_clock::now();
 
-    while (running_.load()) {
+    while (running_.load())
+    {
         int ret = av_read_frame(fmt_ctx_, pkt);
-        
+
         // 更新 watch dog
-        if (timeout_ctx_) {
+        if (timeout_ctx_)
+        {
             auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             timeout_ctx_->last_activity_ts.store(now_ms);
         }
 
-        if (ret < 0) {
+        if (ret < 0)
+        {
             const bool is_eagain = (ret == AVERROR(EAGAIN));
             const bool is_eintr = (ret == AVERROR(EINTR));
             const bool is_timeout = (ret == AVERROR(ETIMEDOUT));
@@ -335,29 +378,35 @@ void RtpReceiver::workerThread()
             const bool is_transient = (is_eagain || is_eintr || is_timeout || is_eof);
 
             auto now = std::chrono::steady_clock::now();
-            if (now - last_packet_time > std::chrono::seconds(2)) {
+            if (now - last_packet_time > std::chrono::seconds(2))
+            {
                 std::cout << "[RtpReceiver] idle: no packets for 2000ms. last_error=" << avErrStrRecv(ret) << "\n";
                 last_packet_time = now;
             }
 
-            if (is_transient) {
-                if ((is_timeout || is_eof) && (++error_count % 50 == 1)) {
+            if (is_transient)
+            {
+                if ((is_timeout || is_eof) && (++error_count % 50 == 1))
+                {
                     std::cout << "[RtpReceiver] transient read error count=" << error_count
-                              << " last=" << avErrStrRecv(ret) << "\n";
+                                << " last=" << avErrStrRecv(ret) << "\n";
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
 
             consecutive_errors++;
-            if (error_cb_) {
+            if (error_cb_)
+            {
                 error_cb_("av_read_frame error: " + avErrStrRecv(ret));
             }
-            if (consecutive_errors % 10 == 1) {
+            if (consecutive_errors % 10 == 1)
+            {
                 std::cerr << "[RtpReceiver] av_read_frame error count=" << consecutive_errors
-                          << " last=" << avErrStrRecv(ret) << "\n";
+                            << " last=" << avErrStrRecv(ret) << "\n";
             }
-            if (consecutive_errors > 50) {
+            if (consecutive_errors > 50)
+            {
                 std::cerr << "[RtpReceiver] too many consecutive errors, stopping worker thread.\n";
                 break;
             }
@@ -368,27 +417,34 @@ void RtpReceiver::workerThread()
         consecutive_errors = 0;
         last_packet_time = std::chrono::steady_clock::now();
 
-        if (pkt->stream_index == video_stream_idx_) {
+        if (pkt->stream_index == video_stream_idx_)
+        {
             ++video_packets;
             last_packet_time = std::chrono::steady_clock::now();
-            if (!video_decoder_.decode(pkt)) {
+            if (!video_decoder_.decode(pkt))
+            {
                 // decode 内部会调用 callback，这里只处理致命错误
                 // 忽略 EAGAIN
             }
-        } else if (pkt->stream_index == audio_stream_idx_) {
+        }
+        else if (pkt->stream_index == audio_stream_idx_)
+        {
             ++audio_packets;
             last_packet_time = std::chrono::steady_clock::now();
             AudioFrame a_frame;
-            if (audio_decoder_.decode(pkt, a_frame)) {
-                if (audio_cb_) {
+            if (audio_decoder_.decode(pkt, a_frame))
+            {
+                if (audio_cb_)
+                {
                     audio_cb_(a_frame);
                 }
             }
         }
 
-        if ((video_packets + audio_packets) % 100 == 1) {
+        if ((video_packets + audio_packets) % 100 == 1)
+        {
             std::cout << "[RtpReceiver] packets v=" << video_packets
-                      << " a=" << audio_packets << "\n";
+                        << " a=" << audio_packets << "\n";
         }
 
         av_packet_unref(pkt);

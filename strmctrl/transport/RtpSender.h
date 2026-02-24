@@ -6,12 +6,14 @@
 
 #include "../codec/CodecConfig.h"
 
-extern "C" {
+extern "C"
+{
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 }
 
-namespace strmctrl {
+namespace strmctrl
+{
 
 /**
  * @brief RTP 推流器，将编码后的 AVPacket 通过 RTP/UDP 推送给从端。
@@ -32,7 +34,8 @@ namespace strmctrl {
  * a_encoder.setPacketCallback([&](AVPacket* pkt) { sender.sendPacket(pkt, a_idx); });
  * @endcode
  */
-class RtpSender {
+class RtpSender
+{
 public:
     // -----------------------------------------------------------------------
     // 构造 / 析构
@@ -41,8 +44,8 @@ public:
     RtpSender() = default;
     ~RtpSender();
 
-    RtpSender(const RtpSender&)            = delete;
-    RtpSender& operator=(const RtpSender&) = delete;
+    RtpSender(const RtpSender &) = delete;
+    RtpSender &operator=(const RtpSender &) = delete;
 
     // -----------------------------------------------------------------------
     // 生命周期
@@ -56,9 +59,9 @@ public:
      * @param codec_ctx    已打开的编码器上下文，用于初始化流参数
      * @return             流的索引（stream_index），用于 sendPacket；失败返回 -1
      */
-    int addStream(const std::string& dest_host,
-                  int                dest_port,
-                  const AVCodecContext* codec_ctx);
+    int addStream(const std::string &dest_host,
+                    int dest_port,
+                    const AVCodecContext *codec_ctx);
 
     /**
      * @brief 设置发送端本地 RTP 端口基值（用于同机调试避让端口冲突）。
@@ -98,7 +101,7 @@ public:
      * @param stream_index addStream 返回的流索引
      * @return             true 表示成功写入；false 表示写入错误（见 lastError()）
      */
-    bool sendPacket(AVPacket* pkt, int stream_index);
+    bool sendPacket(AVPacket *pkt, int stream_index);
 
     // -----------------------------------------------------------------------
     // SDP
@@ -117,12 +120,13 @@ public:
     // -----------------------------------------------------------------------
 
     /** @brief 返回最近一次错误的描述字符串。 */
-    const std::string& lastError() const noexcept { return last_error_; }
+    const std::string &lastError() const noexcept { return last_error_; }
 
 private:
-    struct StreamContext {
-        AVFormatContext* fmt_ctx = nullptr;
-        AVStream* stream = nullptr;
+    struct StreamContext
+    {
+        AVFormatContext *fmt_ctx = nullptr;
+        AVStream *stream = nullptr;
         AVRational enc_time_base = {1, 90000};
         int64_t last_dts = AV_NOPTS_VALUE;
         int64_t pkt_index = 0;

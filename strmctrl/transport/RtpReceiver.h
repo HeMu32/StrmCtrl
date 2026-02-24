@@ -10,11 +10,13 @@
 #include "../codec/AudioDecoder.h"
 #include "../core/Callbacks.h"
 
-extern "C" {
+extern "C"
+{
 #include <libavformat/avformat.h>
 }
 
-namespace strmctrl {
+namespace strmctrl
+{
 
 /**
  * @brief RTP 接收器，在独立线程中持续接收并解码来自主端的 RTP 音视频流。
@@ -24,7 +26,8 @@ namespace strmctrl {
  * 根据 stream_index 将包分发给 VideoDecoder 或 AudioDecoder。
  * 解码结果通过对应的 Callback 在工作线程中同步回调。
  */
-class RtpReceiver {
+class RtpReceiver
+{
 public:
     // -----------------------------------------------------------------------
     // 构造 / 析构
@@ -33,8 +36,8 @@ public:
     RtpReceiver();
     ~RtpReceiver();
 
-    RtpReceiver(const RtpReceiver&)            = delete;
-    RtpReceiver& operator=(const RtpReceiver&) = delete;
+    RtpReceiver(const RtpReceiver &) = delete;
+    RtpReceiver &operator=(const RtpReceiver &) = delete;
 
     // -----------------------------------------------------------------------
     // 配置
@@ -54,7 +57,7 @@ public:
      * @brief 注册错误 callback（工作线程遇到致命错误时调用）。
      * @param cb  参数为错误描述字符串
      */
-    void setErrorCallback(std::function<void(const std::string&)> cb);
+    void setErrorCallback(std::function<void(const std::string &)> cb);
 
     // -----------------------------------------------------------------------
     // 生命周期
@@ -69,7 +72,7 @@ public:
      * @param sdp  SDP 字符串（由 RtpSender::generateSdp() 生成并经信令通道传输）
      * @return     true 表示成功；false 表示 FFmpeg 无法解析 SDP（见 lastError()）
      */
-    bool openWithSdp(const std::string& sdp);
+    bool openWithSdp(const std::string &sdp);
 
     /**
      * @brief 直接通过 RTP URL 打开输入（调试或无 SDP 协商时使用）。
@@ -77,7 +80,7 @@ public:
      * @param port  RTP 端口
      * @return      true 表示成功
      */
-    bool openWithUrl(const std::string& host, int port);
+    bool openWithUrl(const std::string &host, int port);
 
     /**
      * @brief 启动内部工作线程，开始接收并解码 RTP 包。
@@ -105,7 +108,7 @@ public:
 private:
     void workerThread();
 
-    AVFormatContext* fmt_ctx_ = nullptr;
+    AVFormatContext *fmt_ctx_ = nullptr;
     int video_stream_idx_ = -1;
     int audio_stream_idx_ = -1;
 
@@ -114,18 +117,19 @@ private:
 
     VideoFrameCallback video_cb_;
     AudioFrameCallback audio_cb_;
-    std::function<void(const std::string&)> error_cb_;
+    std::function<void(const std::string &)> error_cb_;
 
     std::atomic<bool> running_{false};
-    std::thread       thread_;
-    std::string       last_error_;
+    std::thread thread_;
+    std::string last_error_;
 
     // TimeoutContext management
-    struct TimeoutContext {
+    struct TimeoutContext
+    {
         std::atomic<int64_t> last_activity_ts; // steady_clock::now().time_since_epoch().count() (ms)
-        int                  timeout_ms;
+        int timeout_ms;
     };
-    TimeoutContext* timeout_ctx_ = nullptr;
+    TimeoutContext *timeout_ctx_ = nullptr;
 };
 
 } // namespace strmctrl

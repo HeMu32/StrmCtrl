@@ -12,7 +12,8 @@
 
 #include <thread>
 
-namespace strmctrl {
+namespace strmctrl
+{
 
 /**
  * @brief 从端门面类（Facade）。
@@ -54,7 +55,8 @@ namespace strmctrl {
  * 主端回复 SDP 后，Slave 内部自动初始化 RtpReceiver 并启动接收线程。
  * 这一过程对调用方完全透明。
  */
-class Slave {
+class Slave
+{
 public:
     // -----------------------------------------------------------------------
     // 构造 / 析构
@@ -63,8 +65,8 @@ public:
     Slave();
     ~Slave();
 
-    Slave(const Slave&)            = delete;
-    Slave& operator=(const Slave&) = delete;
+    Slave(const Slave &) = delete;
+    Slave &operator=(const Slave &) = delete;
 
     // -----------------------------------------------------------------------
     // 配置（在 connect() 之前设置）
@@ -98,10 +100,10 @@ public:
      * @brief 设置视频参数请求（建议值）。
      * @param req  请求参数（可缺省字段）
      */
-    void setVideoConfigRequest(const VideoConfigRequest& req);
+    void setVideoConfigRequest(const VideoConfigRequest &req);
 
     /** @brief 获取 Master 返回的最终视频参数（如有）。 */
-    const std::optional<CodecConfig>& negotiatedVideoConfig() const noexcept
+    const std::optional<CodecConfig> &negotiatedVideoConfig() const noexcept
     {
         return negotiated_video_cfg_;
     }
@@ -118,13 +120,13 @@ public:
      * ConnectionCallback 通知。
      *
      * @param master_host       主端 IP 或主机名
-    * @param signaling_port    主端 WebSocket 端口（默认 11451）
-    * @param rtp_port          本地 RTP 接收端口（默认 11452）
+     * @param signaling_port    主端 WebSocket 端口（默认 11451）
+     * @param rtp_port          本地 RTP 接收端口（默认 11452）
      * @return                  true 表示信令通道启动成功（连接可能尚未建立）
      */
-    bool connect(const std::string& master_host,
-                 int signaling_port = 11451,
-                 int rtp_port       = 11452);
+    bool connect(const std::string &master_host,
+                    int signaling_port = 11451,
+                    int rtp_port = 11452);
 
     /**
      * @brief 断开与主端的连接。
@@ -144,27 +146,27 @@ public:
      * @brief 向主端发送文本消息。
      * @param text  消息内容
      */
-    void sendMessage(const std::string& text);
+    void sendMessage(const std::string &text);
 
 private:
     // 内部回调处理
     void onConnected();
     void onDisconnected();
-    void onSdpReceived(const std::string& sdp);
+    void onSdpReceived(const std::string &sdp);
 
     bool connected_ = false;
-    int  rtp_port_  = 11452;
+    int rtp_port_ = 11452;
     bool has_video_req_ = false;
     VideoConfigRequest video_req_;
     std::optional<CodecConfig> negotiated_video_cfg_;
 
     std::unique_ptr<SignalingChannel> signaling_;
-    std::mutex                        rtp_mutex_;
-    std::unique_ptr<RtpReceiver>      rtp_receiver_;
-    std::mutex                        init_mutex_;
-    std::thread                       init_thread_;
+    std::mutex rtp_mutex_;
+    std::unique_ptr<RtpReceiver> rtp_receiver_;
+    std::mutex init_mutex_;
+    std::thread init_thread_;
 
-    MessageCallback    msg_cb_;
+    MessageCallback msg_cb_;
     VideoFrameCallback video_cb_;
     AudioFrameCallback audio_cb_;
     ConnectionCallback conn_cb_;
