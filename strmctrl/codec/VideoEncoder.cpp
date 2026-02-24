@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <stdexcept>
+#include <iostream>
 
 extern "C" {
 #include <libavutil/opt.h>
@@ -184,9 +185,19 @@ bool VideoEncoder::receivePackets()
         return false;
     }
 
+    static int64_t s_packet_count = 0;
+
     int ret = 0;
     while ((ret = avcodec_receive_packet(codec_ctx_, pkt)) == 0) {
         if (pkt_cb_) pkt_cb_(pkt);
+        ++s_packet_count;
+        if (s_packet_count % 200 == 1) {
+            std::cout << "[VideoEncoder] output packets=" << s_packet_count
+                      << " pts=" << pkt->pts
+                      << " dts=" << pkt->dts
+                      << " size=" << pkt->size
+                      << "\n";
+        }
         av_packet_unref(pkt);
     }
     av_packet_free(&pkt);

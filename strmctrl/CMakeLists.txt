@@ -11,6 +11,7 @@ add_library(strmctrl STATIC
     core/VideoFrame.h
     core/AudioFrame.h
     core/Callbacks.h
+    core/VideoConfig.h
 
     # Codec layer
     codec/CodecConfig.h

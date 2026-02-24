@@ -12,6 +12,8 @@
 #include "codec/VideoEncoder.h"
 #include "codec/AudioEncoder.h"
 
+#include "core/VideoConfig.h"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 }
@@ -170,7 +172,7 @@ private:
     // 内部回调处理
     void onSlaveConnected(const std::string& ip);
     void onSlaveDisconnected();
-    void onSdpRequest();
+    void onSdpRequest(const std::string& payload);
     void onReady();
 
     // 绑定编码器输出到 RTP 发送器
@@ -181,6 +183,7 @@ private:
     bool running_       = false;
 
     CodecConfig video_cfg_;
+    CodecConfig active_video_cfg_;
     bool has_audio_cfg_ = false;
     AudioConfig audio_cfg_;
 

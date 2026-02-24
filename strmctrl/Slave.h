@@ -3,8 +3,10 @@
 #include <memory>
 #include <string>
 #include <mutex>
+#include <optional>
 
 #include "core/Callbacks.h"
+#include "core/VideoConfig.h"
 #include "transport/SignalingChannel.h"
 #include "transport/RtpReceiver.h"
 
@@ -92,6 +94,18 @@ public:
      */
     void setConnectionCallback(ConnectionCallback cb);
 
+    /**
+     * @brief 设置视频参数请求（建议值）。
+     * @param req  请求参数（可缺省字段）
+     */
+    void setVideoConfigRequest(const VideoConfigRequest& req);
+
+    /** @brief 获取 Master 返回的最终视频参数（如有）。 */
+    const std::optional<CodecConfig>& negotiatedVideoConfig() const noexcept
+    {
+        return negotiated_video_cfg_;
+    }
+
     // -----------------------------------------------------------------------
     // 生命周期
     // -----------------------------------------------------------------------
@@ -140,6 +154,9 @@ private:
 
     bool connected_ = false;
     int  rtp_port_  = 11452;
+    bool has_video_req_ = false;
+    VideoConfigRequest video_req_;
+    std::optional<CodecConfig> negotiated_video_cfg_;
 
     std::unique_ptr<SignalingChannel> signaling_;
     std::mutex                        rtp_mutex_;

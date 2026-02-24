@@ -119,6 +119,13 @@ private:
     std::atomic<bool> running_{false};
     std::thread       thread_;
     std::string       last_error_;
+
+    // TimeoutContext management
+    struct TimeoutContext {
+        std::atomic<int64_t> last_activity_ts; // steady_clock::now().time_since_epoch().count() (ms)
+        int                  timeout_ms;
+    };
+    TimeoutContext* timeout_ctx_ = nullptr;
 };
 
 } // namespace strmctrl

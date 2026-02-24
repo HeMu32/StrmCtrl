@@ -22,11 +22,6 @@ static std::string avErrStrRecv(int err)
     return std::string(buf);
 }
 
-struct TimeoutContext {
-    std::chrono::steady_clock::time_point start;
-    int timeout_ms;
-};
-
 // ---------------------------------------------------------------------------
 // 构造 / 析构
 // ---------------------------------------------------------------------------
@@ -37,11 +32,15 @@ RtpReceiver::~RtpReceiver()
 {
     stop();
     if (fmt_ctx_) {
-        if (fmt_ctx_->interrupt_callback.opaque) {
-            delete static_cast<TimeoutContext*>(fmt_ctx_->interrupt_callback.opaque);
-            fmt_ctx_->interrupt_callback.opaque = nullptr;
-        }
+        // 清理 interrupt callback
+        fmt_ctx_->interrupt_callback.callback = nullptr;
+        fmt_ctx_->interrupt_callback.opaque = nullptr;
         avformat_close_input(&fmt_ctx_);
+    }
+    // Delete TimeoutContext if allocated
+    if (timeout_ctx_) {
+        delete timeout_ctx_;
+        timeout_ctx_ = nullptr;
     }
 }
 
@@ -108,12 +107,16 @@ bool RtpReceiver::openWithSdp(const std::string& sdp)
 bool RtpReceiver::openWithUrl(const std::string& host, int port)
 {
     if (fmt_ctx_) {
-        if (fmt_ctx_->interrupt_callback.opaque) {
-            delete static_cast<TimeoutContext*>(fmt_ctx_->interrupt_callback.opaque);
-            fmt_ctx_->interrupt_callback.opaque = nullptr;
-        }
+        // Clear interrupt first
+        fmt_ctx_->interrupt_callback.callback = nullptr;
+        fmt_ctx_->interrupt_callback.opaque = nullptr;
         avformat_close_input(&fmt_ctx_);
         fmt_ctx_ = nullptr;
+    }
+    
+    if (timeout_ctx_) {
+        delete timeout_ctx_;
+        timeout_ctx_ = nullptr;
     }
 
     video_decoder_.close();
@@ -127,29 +130,41 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
         return false;
     }
 
-    // Set interrupt callback to timeout if no data arrives
-    TimeoutContext* tctx = new TimeoutContext{std::chrono::steady_clock::now(), 3000}; // 3s timeout
+    // Set interrupt callback
+    timeout_ctx_ = new TimeoutContext;
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    timeout_ctx_->last_activity_ts.store(now_ms);
+    timeout_ctx_->timeout_ms = 5000; // 5s timeout
+
     fmt_ctx_->interrupt_callback.callback = [](void* opaque) -> int {
         auto* ctx = static_cast<TimeoutContext*>(opaque);
-        auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->start).count() > ctx->timeout_ms) {
-            return 1; // 1 means interrupt
+        if (!ctx) return 0;
+        
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        int64_t diff = now_ms - ctx->last_activity_ts.load();
+        
+        if (diff > ctx->timeout_ms) {
+            // Uncomment to debug timeouts:
+            // std::cerr << "[RtpReceiver] Interrupt callback timed out! diff=" << diff << "ms\n";
+            return 1; // Interrupt
         }
-        return 0; // 0 means continue
+        return 0; // Continue
     };
-    fmt_ctx_->interrupt_callback.opaque = tctx;
+    fmt_ctx_->interrupt_callback.opaque = timeout_ctx_;
 
     // 必须设置 protocol_whitelist，否则 sdp 无法打开 rtp/udp
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "protocol_whitelist", "file,crypto,data,rtp,udp", 0);
     // 探测时间：500ms 足以接收首帧 SPS/PPS 并让解码器自配置。
-    // 注意：avformat_find_stream_info 对 RTP 流可能返回负值（unspecified size），
-    // 这不影响后续解码。
     av_dict_set(&opts, "analyzeduration", "500000", 0);
-    av_dict_set(&opts, "probesize", "1048576", 0);
-    // 设置超时以防止挂起
-    av_dict_set(&opts, "timeout", "1000000", 0); // 1秒
-    av_dict_set(&opts, "rw_timeout", "1000000", 0); // 1秒
+    av_dict_set(&opts, "probesize", "5000000", 0); 
+    // UDP/RTP 接收缓冲与过载容忍
+    av_dict_set(&opts, "buffer_size", "5000000", 0); 
+    av_dict_set(&opts, "fifo_size", "5000000", 0);
+    av_dict_set(&opts, "overrun_nonfatal", "1", 0);
+    // 设置长时间 socket 超时作为第二道防线
+    av_dict_set(&opts, "timeout", "5000000", 0); 
+    av_dict_set(&opts, "rw_timeout", "5000000", 0); 
 
     std::string url;
     const AVInputFormat* in_fmt = nullptr;
@@ -224,17 +239,18 @@ bool RtpReceiver::openWithUrl(const std::string& host, int port)
     // 查找流信息
     ret = avformat_find_stream_info(fmt_ctx_, nullptr);
     if (ret < 0) {
-        // 对于 RTP 流，如果发送端还没发数据，这里可能会返回负数（如 unspecified size）。
-        // 但只要流被创建了，后续收到 SPS/PPS 依然可以解码。
         std::cerr << "[RtpReceiver] Warning: avformat_find_stream_info returned "
                   << ret << " (" << avErrStrRecv(ret) << "). Continuing anyway.\n";
     }
 
-    // Disable the timeout callback now that stream info is probed
-    if (fmt_ctx_->interrupt_callback.opaque) {
-        delete static_cast<TimeoutContext*>(fmt_ctx_->interrupt_callback.opaque);
-        fmt_ctx_->interrupt_callback.opaque = nullptr;
-        fmt_ctx_->interrupt_callback.callback = nullptr;
+    // 更新 interrupt callback 的超时
+    // 这里我们不删除它，而是更新时间戳，这样后续 workerThread 可以持续使用它
+    if (timeout_ctx_) {
+        // 更新最后活动时间
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        timeout_ctx_->last_activity_ts.store(now_ms);
+        // 设置较长的超时（如 10秒），避免短暂网络抖动误杀
+        timeout_ctx_->timeout_ms = 10000;
     }
 
     // 遍历流，初始化解码器
@@ -296,36 +312,83 @@ void RtpReceiver::workerThread()
         return;
     }
 
+    int64_t video_packets = 0;
+    int64_t audio_packets = 0;
+    int64_t error_count = 0;
+    int64_t consecutive_errors = 0;
+    auto last_packet_time = std::chrono::steady_clock::now();
+
     while (running_.load()) {
         int ret = av_read_frame(fmt_ctx_, pkt);
+        
+        // 更新 watch dog
+        if (timeout_ctx_) {
+            auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            timeout_ctx_->last_activity_ts.store(now_ms);
+        }
+
         if (ret < 0) {
-            if (ret == AVERROR(EAGAIN)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            const bool is_eagain = (ret == AVERROR(EAGAIN));
+            const bool is_eintr = (ret == AVERROR(EINTR));
+            const bool is_timeout = (ret == AVERROR(ETIMEDOUT));
+            const bool is_eof = (ret == AVERROR_EOF);
+            const bool is_transient = (is_eagain || is_eintr || is_timeout || is_eof);
+
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_packet_time > std::chrono::seconds(2)) {
+                std::cout << "[RtpReceiver] idle: no packets for 2000ms. last_error=" << avErrStrRecv(ret) << "\n";
+                last_packet_time = now;
+            }
+
+            if (is_transient) {
+                if ((is_timeout || is_eof) && (++error_count % 50 == 1)) {
+                    std::cout << "[RtpReceiver] transient read error count=" << error_count
+                              << " last=" << avErrStrRecv(ret) << "\n";
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
-            if (ret == AVERROR_EOF) {
-                std::cout << "[RtpReceiver] EOF reached.\n";
-                break;
-            }
-            // 其他错误，可能是网络断开
+
+            consecutive_errors++;
             if (error_cb_) {
                 error_cb_("av_read_frame error: " + avErrStrRecv(ret));
             }
-            break;
+            if (consecutive_errors % 10 == 1) {
+                std::cerr << "[RtpReceiver] av_read_frame error count=" << consecutive_errors
+                          << " last=" << avErrStrRecv(ret) << "\n";
+            }
+            if (consecutive_errors > 50) {
+                std::cerr << "[RtpReceiver] too many consecutive errors, stopping worker thread.\n";
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
         }
 
+        consecutive_errors = 0;
+        last_packet_time = std::chrono::steady_clock::now();
+
         if (pkt->stream_index == video_stream_idx_) {
+            ++video_packets;
+            last_packet_time = std::chrono::steady_clock::now();
             if (!video_decoder_.decode(pkt)) {
                 // decode 内部会调用 callback，这里只处理致命错误
                 // 忽略 EAGAIN
             }
         } else if (pkt->stream_index == audio_stream_idx_) {
+            ++audio_packets;
+            last_packet_time = std::chrono::steady_clock::now();
             AudioFrame a_frame;
             if (audio_decoder_.decode(pkt, a_frame)) {
                 if (audio_cb_) {
                     audio_cb_(a_frame);
                 }
             }
+        }
+
+        if ((video_packets + audio_packets) % 100 == 1) {
+            std::cout << "[RtpReceiver] packets v=" << video_packets
+                      << " a=" << audio_packets << "\n";
         }
 
         av_packet_unref(pkt);

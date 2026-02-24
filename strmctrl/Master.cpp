@@ -10,6 +10,7 @@ namespace strmctrl {
 
 Master::Master()
     : video_cfg_(CodecConfig::makeOpenH264())
+    , active_video_cfg_(video_cfg_)
 {}
 
 Master::~Master()
@@ -23,7 +24,13 @@ Master::~Master()
 
 void Master::setSignalingPort(int port)   { signaling_port_ = port; }
 void Master::setRtpPort(int port)         { rtp_port_       = port; }
-void Master::setCodecConfig(const CodecConfig& cfg) { video_cfg_ = cfg; }
+void Master::setCodecConfig(const CodecConfig& cfg)
+{
+    video_cfg_ = cfg;
+    if (!running_) {
+        active_video_cfg_ = cfg;
+    }
+}
 void Master::setAudioConfig(const AudioConfig& cfg) { audio_cfg_ = cfg; has_audio_cfg_ = true; }
 
 void Master::setMessageCallback(MessageCallback cb)
@@ -46,7 +53,8 @@ bool Master::start()
     if (running_) return false;
 
     // 初始化视频编码器
-    video_encoder_ = std::make_unique<VideoEncoder>(video_cfg_);
+    active_video_cfg_ = video_cfg_;
+    video_encoder_ = std::make_unique<VideoEncoder>(active_video_cfg_);
     if (!video_encoder_->open()) {
         std::cerr << "VideoEncoder::open failed: " << video_encoder_->lastError() << "\n";
         return false;
@@ -69,8 +77,8 @@ bool Master::start()
 
     // 内部控制消息 callback
     signaling_->setSdpCallback([this](const std::string& sdp) {
-        if (sdp == "REQUEST") {
-            onSdpRequest();
+        if (sdp.rfind("REQUEST", 0) == 0) {
+            onSdpRequest(sdp);
         }
     });
 
@@ -181,9 +189,28 @@ void Master::onSlaveDisconnected()
     std::cout << "[Master] Slave disconnected\n";
 }
 
-void Master::onSdpRequest()
+void Master::onSdpRequest(const std::string& payload)
 {
     std::cout << "[Master] Received SDP:REQUEST, preparing RTP sender...\n";
+
+    std::string request_payload = payload;
+    const std::string request_prefix = "REQUEST";
+    if (request_payload.rfind(request_prefix, 0) == 0) {
+        request_payload = request_payload.substr(request_prefix.size());
+    }
+
+    VideoConfigRequest req = parseVideoConfigRequest(request_payload);
+    active_video_cfg_ = applyVideoRequestWithCaps(video_cfg_, req);
+
+    if (video_encoder_) {
+        video_encoder_->flush();
+        video_encoder_->close();
+    }
+    video_encoder_ = std::make_unique<VideoEncoder>(active_video_cfg_);
+    if (!video_encoder_->open()) {
+        std::cerr << "VideoEncoder::open failed: " << video_encoder_->lastError() << "\n";
+        return;
+    }
 
     std::unique_ptr<RtpSender> sender = std::make_unique<RtpSender>();
     // 同机调试时，显式给发送端分配远离接收端口的本地端口，避免 bind 冲突。
@@ -211,6 +238,8 @@ void Master::onSdpRequest()
         std::cerr << "[Master] RtpSender::open failed: " << sender->lastError() << "\n";
         return;
     }
+
+    signaling_->sendVideoConfig(serializeVideoConfig(active_video_cfg_));
 
     // 绑定编码器输出到发送器
     video_encoder_->setPacketCallback([this, v_idx](AVPacket* pkt) {

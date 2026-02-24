@@ -144,9 +144,11 @@ void test_TextChat_MasterToSlave() {
     for (int i = 0; i < 50; ++i) {
         if (received) break;
         std::this_thread::sleep_for(100ms);
+    std::cout << "[Test] pushed 30 video frames\n" << std::flush;
     }
     ASSERT_TRUE(received);
     EXPECT_EQ(received_msg, "Ping");
+        std::cout << "." << std::flush;
     
     fixture.slave_->setMessageCallback(nullptr);
 }
@@ -170,9 +172,11 @@ void test_TextChat_SlaveToMaster() {
     for (int i = 0; i < 50; ++i) {
         if (received) break;
         std::this_thread::sleep_for(100ms);
+    std::cout << "[Test] pushed 30 audio frames\n" << std::flush;
     }
     ASSERT_TRUE(received);
     EXPECT_EQ(received_msg, "Pong");
+        std::cout << "." << std::flush;
     
     fixture.master_->setMessageCallback(nullptr);
 }

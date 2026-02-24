@@ -28,6 +28,8 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <vector>
+#include <cmath>
 
 #include <cerrno>
 const int FFMPEG_EAGAIN = EAGAIN;
@@ -37,11 +39,13 @@ const int FFMPEG_EAGAIN = EAGAIN;
 #include "strmctrl/Master.h"
 
 // ---------------------------------------------------------------------------
-// Demo defaults for encoder configuration.
+// Demo defaults for encoder configuration.  Master uses a modest
+// 1280x720@30 profile with AAC audio at 44.1 kHz.  Slave will later request
+// 1920x1080@30 to demonstrate negotiation.
 // ---------------------------------------------------------------------------
 constexpr int kDefaultEncoderWidth       = 1280;
 constexpr int kDefaultEncoderHeight      = 720;
-constexpr int kDefaultEncoderFps         = 30;
+constexpr int kDefaultEncoderFps         = 30;    // master prefers 30fps to match slave request
 constexpr int kDefaultEncoderBitrateKbps = 2000;
 
 constexpr int kDefaultAudioSampleRate    = 48000;
@@ -152,23 +156,38 @@ public:
         return pkt;
     }
 
-    AVFrame* decodePacket(AVPacket* pkt)
+    std::vector<AVFrame*> decodePacket(AVPacket* pkt)
     {
+        std::vector<AVFrame*> frames;
         AVCodecContext* dec_ctx = nullptr;
         if (pkt->stream_index == video_idx_) dec_ctx = video_dec_ctx_;
         else if (pkt->stream_index == audio_idx_) dec_ctx = audio_dec_ctx_;
-        else return nullptr;
+        else return frames;
 
         int ret = avcodec_send_packet(dec_ctx, pkt);
-        if (ret < 0) return nullptr;
-
-        AVFrame* frame = av_frame_alloc();
-        ret = avcodec_receive_frame(dec_ctx, frame);
-        if (ret == 0) {
-            return frame;
+        if (ret == AVERROR(EAGAIN)) {
+            drainDecoder(dec_ctx, frames);
+            ret = avcodec_send_packet(dec_ctx, pkt);
         }
-        av_frame_free(&frame);
-        return nullptr;
+
+        if (ret < 0) return frames;
+
+        drainDecoder(dec_ctx, frames);
+        return frames;
+    }
+
+    std::vector<AVFrame*> flushStream(int stream_idx)
+    {
+        std::vector<AVFrame*> frames;
+        AVCodecContext* dec_ctx = nullptr;
+        if (stream_idx == video_idx_) dec_ctx = video_dec_ctx_;
+        else if (stream_idx == audio_idx_) dec_ctx = audio_dec_ctx_;
+        else return frames;
+
+        int ret = avcodec_send_packet(dec_ctx, nullptr);
+        if (ret < 0 && ret != AVERROR_EOF) return frames;
+        drainDecoder(dec_ctx, frames);
+        return frames;
     }
 
     int videoStreamIndex() const { return video_idx_; }
@@ -183,6 +202,20 @@ public:
     const std::string &lastError() const { return err_; }
 
 private:
+    void drainDecoder(AVCodecContext* dec_ctx, std::vector<AVFrame*>& frames)
+    {
+        while (true) {
+            AVFrame* frame = av_frame_alloc();
+            int r = avcodec_receive_frame(dec_ctx, frame);
+            if (r == 0) {
+                frames.push_back(frame);
+            } else {
+                av_frame_free(&frame);
+                break;
+            }
+        }
+    }
+
     bool openDecoder(int stream_idx, AVCodecContext** dec_ctx) {
         const AVCodec *codec = avcodec_find_decoder(fmt_ctx_->streams[stream_idx]->codecpar->codec_id);
         if (!codec) {
@@ -294,11 +327,31 @@ int main(int argc, char **argv)
     // 推流线程
     std::thread stream_thread([&]()
     {
-        auto start_time = std::chrono::steady_clock::now();
-        int64_t loop_offset_pts_v = 0;
-        int64_t loop_offset_pts_a = 0;
-        int64_t last_pts_v = 0;
-        int64_t last_pts_a = 0;
+        // 记录流开始的物理时间
+        auto stream_clock_start = std::chrono::steady_clock::now();
+        
+        // 用于生成输出 PTS (单调递增)
+        int64_t out_video_pts = 0;
+        int64_t out_audio_pts = 0;
+
+        // 记录上一帧被**接受并发送**的源视频时间戳(秒)，用于计算是否需要跳帧
+        double last_sent_video_src_sec = -1.0;
+        
+        // 最小帧间隔 (略小于 1/30s 以容忍抖动)
+        const double kMinFrameInterval = 1.0 / (kDefaultEncoderFps + 5.0); 
+
+        // 辅助函数：等到物理时间到达 target_abs_sec
+        auto waitDeletedUntil = [&](double target_rel_sec) {
+            if (!running) return;
+            auto target_time = stream_clock_start + std::chrono::duration<double>(target_rel_sec);
+            std::this_thread::sleep_until(target_time);
+        };
+
+        // 记录当前 Loop 的时间偏移量（当文件 loop 时，pts 会归零，我们需要加上 offset 保持单调递增的逻辑时间轴）
+        double loop_time_offset = 0.0;
+        
+        // 记录上一次读取到的 Packet 的解码时间戳，用于检测 Loop 回绕
+        double last_pkt_sec = -1.0;
 
         while (running)
         {
@@ -308,9 +361,21 @@ int main(int argc, char **argv)
                 if (source.lastError() == "EOF" && loop)
                 {
                     std::cout << "[Stream] EOF reached, looping...\n";
+                    
+                    // 刷新剩下的帧
+                    // 注意：这里为了简单，Flush 出来的帧我们就不做精细的时间控制了，或者直接忽略
+                    // 更好的做法是封装一个 processFrames 函数复用逻辑。
+                    // 鉴于 demo 简单性，这里直接重置
+                    
+                    // 累计时间偏移量：加上这一个文件的时长（近似用 last_pkt_sec）
+                    // 加上一点余量防止重叠，比如 0.05s
+                    if (last_pkt_sec > 0) {
+                        loop_time_offset += (last_pkt_sec + 0.1);
+                    }
+
                     source.reopen();
-                    loop_offset_pts_v += last_pts_v;
-                    loop_offset_pts_a += last_pts_a;
+                    last_pkt_sec = -1.0;
+                    last_sent_video_src_sec = -1.0; // 重置跳帧逻辑的参照点 (相对于新文件开头)
                     continue;
                 }
                 else
@@ -320,51 +385,103 @@ int main(int argc, char **argv)
                 }
             }
 
-            // 计算 PTS
-            int64_t pts = pkt->pts;
-            if (pts == AV_NOPTS_VALUE) pts = pkt->dts;
-            if (pts == AV_NOPTS_VALUE) pts = 0;
-
-            AVRational tb = source.streamTimeBase(pkt->stream_index);
-            
-            if (pkt->stream_index == source.videoStreamIndex()) {
-                last_pts_v = pts;
-                pts += loop_offset_pts_v;
-            } else if (pkt->stream_index == source.audioStreamIndex()) {
-                last_pts_a = pts;
-                pts += loop_offset_pts_a;
-            }
-
-            double pts_sec = pts * av_q2d(tb);
-
-            // 同步等待
-            while (running) {
-                auto now = std::chrono::steady_clock::now();
-                std::chrono::duration<double> elapsed = now - start_time;
-                if (elapsed.count() >= pts_sec) {
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-
             if (!running) {
                 av_packet_free(&pkt);
                 break;
             }
 
-            AVFrame* frame = source.decodePacket(pkt);
-            if (frame) {
-                frame->pts = pts; // 更新为连续的 PTS
-                if (pkt->stream_index == source.videoStreamIndex()) {
+            // 计算当前 Packet 大致的秒数，用于判断是否 Loop 回绕以及更新 last_pkt_sec
+            AVRational tb_pkt = source.streamTimeBase(pkt->stream_index);
+            double pkt_sec = (pkt->pts == AV_NOPTS_VALUE) ? 0.0 : (pkt->pts * av_q2d(tb_pkt));
+            if (pkt_sec > last_pkt_sec) last_pkt_sec = pkt_sec;
+
+            std::vector<AVFrame*> frames = source.decodePacket(pkt);
+            
+            // 区分流索引处理
+            bool is_video = (pkt->stream_index == source.videoStreamIndex());
+            bool is_audio = (pkt->stream_index == source.audioStreamIndex());
+            
+            // 用完了 pkt 就可以释放了
+            av_packet_free(&pkt); 
+
+            for (AVFrame* frame : frames) {
+                if (!running) { av_frame_free(&frame); continue; }
+
+                // 1. 获取该帧在源文件中的“绝对时间” (秒)
+                AVRational tb = source.streamTimeBase(is_video ? source.videoStreamIndex() : source.audioStreamIndex());
+                double frame_src_sec = 0.0;
+                if (frame->pts != AV_NOPTS_VALUE) {
+                    frame_src_sec = frame->pts * av_q2d(tb);
+                }
+                
+                // 2. 视频跳帧逻辑：
+                //    如果我们刚刚发送了一帧(last_sent)，且当前帧(frame_src_sec)距离它太近
+                //    说明源帧率高于目标帧率，需要把中间的“过渡帧”丢掉。
+                //    音频通常不需要跳帧，除非你要做倍速。
+                if (is_video) {
+                    // 如果不是第一帧，且距离上一帧太近，则丢弃
+                    if (last_sent_video_src_sec >= 0.0) {
+                        double delta = frame_src_sec - last_sent_video_src_sec;
+                        // 如果 delta 为负（乱序）或极小，也丢弃
+                        if (delta < kMinFrameInterval) {
+                            // Drop
+                            av_frame_free(&frame);
+                            continue;
+                        }
+                    }
+                }
+
+                // 3. 实时等待 (Pacing)
+                //    我们要等到 "物理时间" 追上 "视频/音频的播放时间"。
+                //    播放时间 = loop_offset + frame_src_sec
+                double play_time_sec = loop_time_offset + frame_src_sec;
+                
+                // 等待
+                waitDeletedUntil(play_time_sec);
+
+                // 4. 发送
+                // 为了确保 RTP 传输的稳定性，我们手动按标准时钟计算 PTS
+                // H.264 RTP 标准时钟频率通常为 90000
+                // Audio 标准时钟频率通常为采样率 (e.g. 48000)
+                
+                if (is_video) {
+                    last_sent_video_src_sec = frame_src_sec;
+                    
+                    // VideoEncoder 内部配置了 time_base = {1, fps}
+                    // 我们这里给它传入 "帧序号" 作为 PTS，它会按 1/fps 编码
+                    // 或者我们应该做更精确的映射。
+                    // 为了避免混乱，我们按 "Packet" 数量递增，让 Encoder 认为这是第 N 帧
+                    
+                    frame->pts = out_video_pts;
+                    out_video_pts++; 
+                    
                     master.pushVideoFrame(strmctrl::VideoFrame(frame));
-                } else if (pkt->stream_index == source.audioStreamIndex()) {
+
+                } else if (is_audio) {
+                    // AudioEncoder 内部使用 time_base = {1, sample_rate}
+                    // 它是根据 sample count 来计算的。
+                    // 我们传递 采样点总数 作为 PTS 给它。
+                    
+                    frame->pts = out_audio_pts;
+
+                    // 更新计数器
+                    if (frame->nb_samples > 0) out_audio_pts += frame->nb_samples;
+                    else out_audio_pts += 1024; // fallback
+
                     master.pushAudioFrame(strmctrl::AudioFrame(frame));
                 } else {
                     av_frame_free(&frame);
                 }
             }
-
-            av_packet_free(&pkt);
+            
+            // 打印一次进度日志 (每秒)
+            static int last_print_sec = -1;
+            auto now = std::chrono::steady_clock::now();
+            int cur_sec = (int)std::chrono::duration_cast<std::chrono::seconds>(now - stream_clock_start).count();
+            if (cur_sec > last_print_sec) {
+                last_print_sec = cur_sec;
+                std::cout << "[Stream] Time: " << cur_sec << "s | LoopOff=" << loop_time_offset << "\n";
+            }
         }
     });
 
@@ -380,7 +497,6 @@ int main(int argc, char **argv)
         {
             master.sendMessage(line);
         }
-        std::cout << "> ";
     }
 
     running = false;

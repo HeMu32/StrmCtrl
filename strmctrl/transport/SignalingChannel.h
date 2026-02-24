@@ -24,6 +24,7 @@ namespace strmctrl {
  * ### 内部协议约定
  * 普通文本消息以 `MSG:` 开头，后接消息内容。
  * 内部 SDP 协商帧以 `SDP:` 开头，后接 SDP 字符串。
+ * 视频协商结果帧以 `CFG:VIDEO` 开头，后接 JSON 字符串。
  * 这些前缀由本类内部处理，外部 caller 感知不到。
  *
  * ### 线程安全
@@ -87,6 +88,12 @@ public:
      */
     void setSdpCallback(std::function<void(const std::string& sdp)> cb);
 
+    /**
+     * @brief 注册视频协商结果回调。
+     * @param cb  收到 CFG:VIDEO 帧时调用，参数为 JSON 字符串
+     */
+    void setVideoConfigCallback(std::function<void(const std::string& json)> cb);
+
     // -----------------------------------------------------------------------
     // 生命周期
     // -----------------------------------------------------------------------
@@ -122,6 +129,13 @@ public:
      * @return     true 表示入队成功
      */
     bool sendSdp(const std::string& sdp);
+
+    /**
+     * @brief 发送视频协商结果帧（JSON 字符串）。
+     * @param json  协商结果 JSON
+     * @return      true 表示入队成功
+     */
+    bool sendVideoConfig(const std::string& json);
 
     /**
      * @brief 注册 READY 内部帧回调（从端 RtpReceiver 就绪后通知主端）。
@@ -173,11 +187,13 @@ private:
     MessageCallback                              msg_cb_;
     ConnectionCallback                           conn_cb_;
     std::function<void(const std::string& sdp)> sdp_cb_;
+    std::function<void(const std::string& json)> video_cfg_cb_;
     std::function<void()>                        ready_cb_;
 
     // 消息前缀常量
     static constexpr const char* kMsgPrefix   = "MSG:";
     static constexpr const char* kSdpPrefix   = "SDP:";
+    static constexpr const char* kVideoCfgPrefix = "CFG:VIDEO";
     static constexpr const char* kReadyPrefix = "READY";
 };
 

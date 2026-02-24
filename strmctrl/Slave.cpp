@@ -46,6 +46,12 @@ void Slave::setConnectionCallback(ConnectionCallback cb)
     conn_cb_ = cb;
 }
 
+void Slave::setVideoConfigRequest(const VideoConfigRequest& req)
+{
+    video_req_ = req;
+    has_video_req_ = true;
+}
+
 // ---------------------------------------------------------------------------
 // 生命周期
 // ---------------------------------------------------------------------------
@@ -82,6 +88,21 @@ bool Slave::connect(const std::string& master_host,
                 return;
             }
             onSdpReceived(sdp);
+        }
+    );
+
+    signaling_->setVideoConfigCallback(
+        [this](const std::string& json) {
+            const std::string payload = trimCopy(json);
+            negotiated_video_cfg_ = parseVideoConfig(payload);
+            if (negotiated_video_cfg_.has_value()) {
+                const auto& cfg = *negotiated_video_cfg_;
+                std::cout << "[Slave] Negotiated video config: "
+                          << cfg.width << "x" << cfg.height
+                          << "@" << cfg.fps << "fps"
+                          << " " << cfg.bitrate_kbps << "kbps"
+                          << " codec=" << cfg.codec_name << "\n";
+            }
         }
     );
 
@@ -144,7 +165,11 @@ void Slave::onConnected()
 {
     connected_ = true;
     // 连接建立后立即向主端请求 SDP
-    signaling_->sendSdp("REQUEST");
+    if (has_video_req_) {
+        signaling_->sendSdp("REQUEST " + serializeVideoConfigRequest(video_req_));
+    } else {
+        signaling_->sendSdp("REQUEST");
+    }
     std::cout << "[Slave] Connected to master, SDP request sent.\n";
 }
 

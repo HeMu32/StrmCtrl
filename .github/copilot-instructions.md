@@ -1,4 +1,4 @@
-﻿````instructions
+﻿`````instructions
 # Copilot Instructions — StrmCtrl
 
 ## Project Overview
@@ -48,6 +48,10 @@ demo/
   commons.h                                # Shared HOST/PORT constants for legacy demos
   stream_demo/stream_master.cpp            # Full demo: file decode -> encode (A+V) -> RTP + WS text
   stream_demo/stream_slave.cpp             # Full demo: RTP receive/decode (A+V) + WS text consumer
+  # In the current feature branch, the demo apps illustrate parameter
+  # negotiation: the slave asks for 1920x1080@30, while the master is
+  # preconfigured for 1280x720@60 with 44.1kHz AAC. Master responds with its
+  # own settings and the slave prints the negotiated values.
 
 3rdparty/IXWebSocket/    # git submodule — DO NOT modify source directly
 3rdparty/ffmpeg/         # LGPL shared build: include/ + lib/ (.dll.a MinGW import libs)
@@ -379,72 +383,18 @@ When making further modifications to `strmctrl`, strictly adhere to these robust
 - **Issue**: Callbacks triggered by third-party libraries (IXWebSocket) run on internal dispatch threads.
 - **Rule**: When destroying or resetting the signaling channel, explicitly clear its callbacks (e.g., `signaling_->setConnectionCallback(nullptr);`) *before* calling `stop()` or `reset()`. This prevents reentrant or concurrent `onDisconnected` events from firing while the parent object is already partially destructed.
 
----
-
-## Testing Framework & Best Practices (CTest & MiniTest)
-
-We use CMake's CTest alongside a custom lightweight testing header (`test/MiniTest.h`) to avoid heavy third-party dependencies like GTest. 
-
-### Writing Tests
-- All test files reside in the `test/` directory.
-- Define test cases as standard `void` functions (e.g., `void test_MyFeature();`) or using the `TEST(Suite, Name)` macro if included.
-- **Assertions**: `MiniTest.h` provides macros that throw `std::runtime_error` on failure. These include:
-  - `ASSERT_TRUE(condition)` / `EXPECT_TRUE(condition)`
-  - `ASSERT_FALSE(condition)` / `EXPECT_FALSE(condition)`
-  - `ASSERT_EQ(val1, val2)` / `EXPECT_EQ(val1, val2)`
-- Because exceptions are used for assertions, wrapping assertions within separate threads (e.g., inside an IXWebSocket callback or FFmpeg decode thread) requires care. **Exceptions thrown in background threads will not automatically fail the test in the main thread and will terminate the program abruptly.**
-
-### Asynchronous & Multithreaded Testing (The "Wait-and-Poll" Pattern)
-Because network and AV streams are asynchronous, follow these conventions when verifying state:
-1. **Use Atomic Flags**: Use `std::atomic<bool>` or thread-safe structs to capture async conditions inside callbacks.
-2. **Do Not Block Forever**: Always use finite polling loops with `std::this_thread::sleep_for()` to wait for success. Never use `while(!flag) {}` without a timeout.
-3. **Assert at the End**: Let the main thread poll until a timeout or success is achieved, then call `ASSERT_TRUE(flag)` in the *main thread*.
-4. **Cleanup Handlers**: Before a test function exits (or when a test fixture destructs), be sure to unregister callbacks (e.g., `slave_->setVideoFrameCallback(nullptr)`) to prevent dangling references if the underlying network connection is slow to close.
-
-**Example Asynchronous Test Pattern**:
-```cpp
-void test_AsyncMessage() {
-    StrmCtrlTestSuite fixture;
-    std::atomic<bool> msg_received = false;
-    
-    // Set callback (runs on a background thread)
-    fixture.slave_->setMessageCallback([&](const TextMessage& msg) {
-        if (msg.content == "Hello") msg_received = true;
-    });
-
-    fixture.master_->start();
-    fixture.slave_->connect("127.0.0.1", fixture.signaling_port_, fixture.rtp_port_);
-    
-    // Trigger action
-    fixture.master_->sendMessage("Hello");
-
-    // Finite wait-and-poll loop
-    for (int i = 0; i < 50; ++i) { // Max 5000ms wait
-        if (msg_received) break;
-        std::this_thread::sleep_for(100ms);
-    }
-    
-    // Main thread assertion
-    ASSERT_TRUE(msg_received);
-    fixture.slave_->setMessageCallback(nullptr); // Cleanup
-}
-```
-
-### Setup & Teardown Assumptions
-- **Ports**: Avoid hardcoding port `11451`/`11452` in the test suite as rapid successive test runs might encounter `WSAEADDRINUSE` if the OS hasn't reclaimed the port (`TIME_WAIT`). Instead, use `test::PortAllocator::allocate()` from `test/TestUtils.h` which returns unique, incrementing port numbers for each test fixture.
-- **Fixture Class**: Inherit or instantiate `StrmCtrlTestSuite` (defined in `StrmCtrlTest.cpp`) inside your test function to automatically get allocated isolated ports, initialized `master_`/`slave_` pointers, and safe teardown via its destructor (`slave_->disconnect()`, `master_->stop()`).
-
-### Adding Tests to the Runner
-New tests must be explicitly added to the `void run_all_tests()` block at the bottom of `test/StrmCtrlTest.cpp`:
-```cpp
-try { 
-    test_MyFeature(); 
-    std::cout << "[       OK ] MyFeature\n" << std::flush; 
-    num_tests_passed++; 
-} catch (const std::exception& e) { 
-    std::cout << "[  FAILED  ] MyFeature: " << e.what() << "\n" << std::flush; 
-    num_tests_failed++; 
-}
-```
-If you add robustness tests that push edge boundaries, categorize them under the `// 5. Robustness Tests` section.
-```
+### 4. RTP Timestamp Monotonicity (Critical)
+- **Issue**: Downsampling (e.g., 60fps → 30fps) or looping video sources often results in non-monotonic or repeating PTS/DTS values when calculated naively. FFmpeg's RTP muxer and receiver jitter buffers will silently drop packets or stall if timestamps are not strictly increasing.
+- **Rule**: `RtpSender` must enforce strict monotonicity of `dts` (and `pts`) before calling `av_interleaved_write_frame`.
+- **Implementation**:
+  ```cpp
+  if (ctx.last_dts != AV_NOPTS_VALUE && out_pkt->dts <= ctx.last_dts) {
+      // Force monotonicity even if it causes slight timing jitter
+      int64_t diff = ctx.last_dts - out_pkt->dts + 1;
+      out_pkt->dts += diff;
+      out_pkt->pts += diff;
+  }
+  ctx.last_dts = out_pkt->dts;
+  ```
+- **Context**: This is a "safety net" fix. The upstream logic (Master) should ideally produce perfect timestamps, but real-world source glitches or frame dropping logic often fail edge cases. This fix ensures the RTP stream remains valid at the protocol level.
+`````

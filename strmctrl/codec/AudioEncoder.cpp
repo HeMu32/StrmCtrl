@@ -252,6 +252,8 @@ bool AudioEncoder::encodeFifo(bool flush)
         frame_size = 1024; // 默认值，某些编码器可能为 0
     }
 
+    static int64_t s_packet_count = 0;
+
     while (av_audio_fifo_size(fifo_) >= frame_size || (flush && av_audio_fifo_size(fifo_) > 0)) {
         int current_frame_size = std::min(av_audio_fifo_size(fifo_), frame_size);
 
@@ -300,6 +302,14 @@ bool AudioEncoder::encodeFifo(bool flush)
 
             if (packet_cb_) {
                 packet_cb_(pkt_);
+            }
+            ++s_packet_count;
+            if (s_packet_count % 200 == 1) {
+                std::cout << "[AudioEncoder] output packets=" << s_packet_count
+                          << " pts=" << pkt_->pts
+                          << " dts=" << pkt_->dts
+                          << " size=" << pkt_->size
+                          << "\n";
             }
             av_packet_unref(pkt_);
         }

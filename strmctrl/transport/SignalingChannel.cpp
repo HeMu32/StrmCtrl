@@ -58,6 +58,11 @@ void SignalingChannel::setSdpCallback(std::function<void(const std::string&)> cb
     sdp_cb_ = std::move(cb);
 }
 
+void SignalingChannel::setVideoConfigCallback(std::function<void(const std::string&)> cb)
+{
+    video_cfg_cb_ = std::move(cb);
+}
+
 void SignalingChannel::setReadyCallback(std::function<void()> cb)
 {
     ready_cb_ = std::move(cb);
@@ -156,6 +161,22 @@ bool SignalingChannel::sendSdp(const std::string& sdp)
     }
 }
 
+bool SignalingChannel::sendVideoConfig(const std::string& json)
+{
+    const std::string raw = std::string(kVideoCfgPrefix) + " " + json;
+
+    if (is_server_) {
+        auto clients = server_->getClients();
+        if (clients.empty()) return false;
+        for (auto& ws : clients) ws->send(raw);
+        return true;
+    } else {
+        if (!client_) return false;
+        client_->send(raw);
+        return true;
+    }
+}
+
 bool SignalingChannel::sendReady()
 {
     const std::string raw = std::string(kReadyPrefix);
@@ -215,6 +236,11 @@ void SignalingChannel::dispatchRawMessage(const std::string& raw,
         // 内部 SDP 帧
         if (sdp_cb_) {
             sdp_cb_(raw.substr(std::string(kSdpPrefix).size()));
+        }
+    } else if (raw.rfind(kVideoCfgPrefix, 0) == 0) {
+        if (video_cfg_cb_) {
+            std::string payload = raw.substr(std::string(kVideoCfgPrefix).size());
+            video_cfg_cb_(payload);
         }
     } else if (raw == kReadyPrefix) {
         // 从端 RTP 接收端就绪通知

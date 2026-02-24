@@ -87,6 +87,15 @@ int main(int argc, char *argv[])
     // -----------------------------------------------------------------------
     strmctrl::Slave slave;
 
+    // Request 1920x1080@30 from the master; this is a "suggested" config and
+    // the master will reply with its chosen parameters (in our demo master it
+    // is preconfigured to 1280x720@30, so the request will be ignored).
+    strmctrl::VideoConfigRequest req;
+    req.width  = 1920;
+    req.height = 1080;
+    req.fps    = 30;
+    slave.setVideoConfigRequest(req);
+
     slave.setMessageCallback([](const strmctrl::TextMessage &msg)
                              {
                                  std::cout << "[Master] " << msg.text << "\n";
@@ -109,7 +118,7 @@ int main(int argc, char *argv[])
     slave.setVideoFrameCallback(
         [&](const strmctrl::VideoFrame &frame)
         {
-            std::lock_guard<std::mutex> lock(queue_mutex);
+            std::unique_lock<std::mutex> lock(queue_mutex);
             video_queue.push(frame.clone());
             queue_cv.notify_one();
         });
@@ -118,7 +127,7 @@ int main(int argc, char *argv[])
     slave.setAudioFrameCallback(
         [&](const strmctrl::AudioFrame &frame)
         {
-            std::lock_guard<std::mutex> lock(queue_mutex);
+            std::unique_lock<std::mutex> lock(queue_mutex);
             audio_queue.push(frame.clone());
             queue_cv.notify_one();
         });
