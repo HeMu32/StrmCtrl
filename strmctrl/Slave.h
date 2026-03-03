@@ -1,3 +1,5 @@
+// WebSocket (IXWebSocket) and RTP (ffmpeg) implementation for Slave class.
+
 #pragma once
 
 #include <memory>
@@ -5,6 +7,7 @@
 #include <mutex>
 #include <optional>
 
+#include "ISlave.h"
 #include "core/Callbacks.h"
 #include "core/VideoConfig.h"
 #include "transport/SignalingChannel.h"
@@ -55,7 +58,7 @@ namespace strmctrl
  * 主端回复 SDP 后，Slave 内部自动初始化 RtpReceiver 并启动接收线程。
  * 这一过程对调用方完全透明。
  */
-class Slave
+class Slave : public ISlave
 {
 public:
     // -----------------------------------------------------------------------
@@ -76,34 +79,34 @@ public:
      * @brief 注册来自主端的文本消息 callback。
      * @param cb  消息到达时调用（在 IXWebSocket 内部线程中）
      */
-    void setMessageCallback(MessageCallback cb);
+    void setMessageCallback(MessageCallback cb) override;
 
     /**
      * @brief 注册解码视频帧 callback。
      * @param cb  帧到达时调用（在 RtpReceiver 工作线程中，应尽快返回）
      */
-    void setVideoFrameCallback(VideoFrameCallback cb);
+    void setVideoFrameCallback(VideoFrameCallback cb) override;
 
     /**
      * @brief 注册解码音频帧 callback。
      * @param cb  帧到达时调用（在 RtpReceiver 工作线程中，应尽快返回）
      */
-    void setAudioFrameCallback(AudioFrameCallback cb);
+    void setAudioFrameCallback(AudioFrameCallback cb) override;
 
     /**
      * @brief 注册连接状态变化 callback。
      * @param cb  连接建立/断开时调用
      */
-    void setConnectionCallback(ConnectionCallback cb);
+    void setConnectionCallback(ConnectionCallback cb) override;
 
     /**
      * @brief 设置视频参数请求（建议值）。
      * @param req  请求参数（可缺省字段）
      */
-    void setVideoConfigRequest(const VideoConfigRequest &req);
+    void setVideoConfigRequest(const VideoConfigRequest &req) override;
 
     /** @brief 获取 Master 返回的最终视频参数（如有）。 */
-    const std::optional<CodecConfig> &negotiatedVideoConfig() const noexcept
+    const std::optional<CodecConfig> &negotiatedVideoConfig() const noexcept override
     {
         return negotiated_video_cfg_;
     }
@@ -133,10 +136,10 @@ public:
      *
      * 停止信令通道和 RTP 接收器。
      */
-    void disconnect();
+    void disconnect() override;
 
     /** @brief 是否已连接到主端。 */
-    bool isConnected() const noexcept { return connected_; }
+    bool isConnected() const noexcept override { return connected_; }
 
     // -----------------------------------------------------------------------
     // 消息
@@ -146,7 +149,7 @@ public:
      * @brief 向主端发送文本消息。
      * @param text  消息内容
      */
-    void sendMessage(const std::string &text);
+    void sendMessage(const std::string &text) override;
 
 private:
     // 内部回调处理

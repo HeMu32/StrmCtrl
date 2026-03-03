@@ -102,7 +102,8 @@ public:
         AVFrame* copy = av_frame_alloc();
         if (!copy) throw std::runtime_error("VideoFrame::clone: av_frame_alloc failed");
 
-        if (av_frame_ref(copy, frame_.get()) < 0) {
+        if (av_frame_ref(copy, frame_.get()) < 0) 
+        {
             av_frame_free(&copy);
             throw std::runtime_error("VideoFrame::clone: av_frame_ref failed");
         }
