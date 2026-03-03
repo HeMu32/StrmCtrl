@@ -11,11 +11,55 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(USE_TLS "Build with TLS support" OFF)
 option(USE_ZLIB "Build with ZLIB support" OFF)
 
+# ---------------------------------------------------------------------------
+# FFmpeg — LGPL shared build (headers + import libs under 3rdparty/ffmpeg)
+# ---------------------------------------------------------------------------
+set(FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg")
+set(FFMPEG_INCLUDE_DIR "${FFMPEG_ROOT}/include")
+set(FFMPEG_LIB_DIR     "${FFMPEG_ROOT}/lib")
+
+# Helper macro: create one IMPORTED shared library target per FFmpeg component
+macro(add_ffmpeg_lib TARGET_NAME LIB_STEM)
+    add_library(${TARGET_NAME} SHARED IMPORTED GLOBAL)
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        IMPORTED_IMPLIB   "${FFMPEG_LIB_DIR}/lib${LIB_STEM}.dll.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_INCLUDE_DIR}"
+    )
+endmacro()
+
+add_ffmpeg_lib(ffmpeg::avcodec    avcodec)
+add_ffmpeg_lib(ffmpeg::avformat   avformat)
+add_ffmpeg_lib(ffmpeg::avutil     avutil)
+add_ffmpeg_lib(ffmpeg::swresample swresample)
+add_ffmpeg_lib(ffmpeg::swscale    swscale)
+
+# Convenience interface target that bundles all FFmpeg components
+add_library(ffmpeg::ffmpeg INTERFACE IMPORTED GLOBAL)
+target_link_libraries(ffmpeg::ffmpeg INTERFACE
+    ffmpeg::avcodec
+    ffmpeg::avformat
+    ffmpeg::avutil
+    ffmpeg::swresample
+    ffmpeg::swscale
+)
+
+# ---------------------------------------------------------------------------
+# Third-party & project subdirectories
+# ---------------------------------------------------------------------------
+
 # Add IXWebSocket submodule
 add_subdirectory(3rdparty/IXWebSocket)
 
-# Add demo directory
+# Core StrmCtrl library
+add_subdirectory(strmctrl)
+
+# Demo programs
 add_subdirectory(demo)
+
+# Tests
+include(CTest)
+enable_testing()
+add_subdirectory(test)
 
 # Make compile_commands.json available at project root for editors that
 # look for it there (this target copies from build/ when you run a build).
