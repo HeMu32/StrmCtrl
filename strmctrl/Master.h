@@ -1,9 +1,12 @@
+// WebSocket (IXWebSocket) and RTP (ffmpeg) implementation for Master class.
+
 #pragma once
 
 #include <memory>
 #include <string>
 #include <mutex>
 
+#include "IMaster.h"
 #include "core/Callbacks.h"
 #include "codec/CodecConfig.h"
 #include "codec/AudioConfig.h"
@@ -62,7 +65,7 @@ namespace strmctrl
  * 然后自动回复 SDP 字符串；RtpSender 随后开始向从端推流。
  * 这一过程对调用方透明。
  */
-class Master
+class Master : public IMaster
 {
 public:
     // -----------------------------------------------------------------------
@@ -97,25 +100,25 @@ public:
      * @brief 设置视频编码配置。
      * @param cfg  CodecConfig 实例（默认为 libopenh264 1280x720@30fps 2Mbps）
      */
-    void setCodecConfig(const CodecConfig &cfg);
+    void setCodecConfig(const CodecConfig &cfg) override;
 
     /**
      * @brief 设置音频编码配置。
      * @param cfg  AudioConfig 实例
      */
-    void setAudioConfig(const AudioConfig &cfg);
+    void setAudioConfig(const AudioConfig &cfg) override;
 
     /**
      * @brief 注册来自从端的文本消息 callback。
      * @param cb  消息到达时调用（在 IXWebSocket 内部线程中）
      */
-    void setMessageCallback(MessageCallback cb);
+    void setMessageCallback(MessageCallback cb) override;
 
     /**
      * @brief 注册连接状态变化 callback。
      * @param cb  从端连接/断开时调用
      */
-    void setConnectionCallback(ConnectionCallback cb);
+    void setConnectionCallback(ConnectionCallback cb) override;
 
     // -----------------------------------------------------------------------
     // 生命周期
@@ -127,17 +130,17 @@ public:
      * 内部启动 WebSocket 服务器监听，并准备好编码器。
      * @return true 表示成功；false 表示端口被占用或编码器初始化失败
      */
-    bool start();
+    bool start() override;
 
     /**
      * @brief 停止 Master 服务。
      *
      * 断开所有从端连接，关闭编码器和 RTP 推流器。
      */
-    void stop();
+    void stop() override;
 
     /** @brief Master 是否正在运行。 */
-    bool isRunning() const noexcept { return running_; }
+    bool isRunning() const noexcept override { return running_; }
 
     // -----------------------------------------------------------------------
     // 推流
@@ -150,7 +153,7 @@ public:
      * 若当前无从端连接或未完成 SDP 协商，帧将被丢弃。
      * @param frame  解码后的视频帧（调用方保留所有权）
      */
-    void pushVideoFrame(const VideoFrame &frame);
+    void pushVideoFrame(const VideoFrame &frame) override;
 
     /**
      * @brief 推送一帧原始音频数据。
@@ -159,7 +162,7 @@ public:
      * 若当前无从端连接或未完成 SDP 协商，帧将被丢弃。
      * @param frame  解码后的音频帧（调用方保留所有权）
      */
-    void pushAudioFrame(const AudioFrame &frame);
+    void pushAudioFrame(const AudioFrame &frame) override;
 
     // -----------------------------------------------------------------------
     // 消息
@@ -169,7 +172,7 @@ public:
      * @brief 向所有已连接的从端广播文本消息。
      * @param text  消息内容
      */
-    void sendMessage(const std::string &text);
+    void sendMessage(const std::string &text) override;
 
 private:
     // 内部回调处理
