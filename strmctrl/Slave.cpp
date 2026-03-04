@@ -174,6 +174,25 @@ void Slave::sendMessage(const std::string &text)
     signaling_->sendMessage(TextMessage::make(text, "slave"));
 }
 
+bool Slave::registerPrefixCallback(const std::string &prefix,
+                                   SignalingChannel::PrefixCallback cb)
+{
+    if (!signaling_)
+    {
+        return false;
+    }
+    return signaling_->registerPrefixCallback(prefix, std::move(cb));
+}
+
+bool Slave::sendPrefixedMessage(const std::string &prefix, const std::string &payload)
+{
+    if (!signaling_)
+    {
+        return false;
+    }
+    return signaling_->sendPrefixed(prefix, payload);
+}
+
 // ---------------------------------------------------------------------------
 // 内部回调处理
 // ---------------------------------------------------------------------------

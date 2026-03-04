@@ -65,6 +65,39 @@ void SignalingChannel::setVideoConfigCallback(std::function<void(const std::stri
     video_cfg_cb_ = std::move(cb);
 }
 
+bool SignalingChannel::registerPrefixCallback(const std::string &prefix,
+                                              PrefixCallback cb)
+{
+    if (prefix.empty() || !cb)
+    {
+        return false;
+    }
+
+    if (prefix == kReadyPrefix ||
+        prefix == kMsgPrefix ||
+        prefix == kSdpPrefix ||
+        prefix == kVideoCfgPrefix)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(custom_prefix_mutex_);
+    custom_prefix_cbs_[prefix] = std::move(cb);
+    return true;
+}
+
+bool SignalingChannel::unregisterPrefixCallback(const std::string &prefix)
+{
+    std::lock_guard<std::mutex> lock(custom_prefix_mutex_);
+    return custom_prefix_cbs_.erase(prefix) > 0;
+}
+
+void SignalingChannel::clearPrefixCallbacks()
+{
+    std::lock_guard<std::mutex> lock(custom_prefix_mutex_);
+    custom_prefix_cbs_.clear();
+}
+
 void SignalingChannel::setReadyCallback(std::function<void()> cb)
 {
     ready_cb_ = std::move(cb);
@@ -234,6 +267,33 @@ bool SignalingChannel::sendReady()
     }
 }
 
+bool SignalingChannel::sendPrefixed(const std::string &prefix, const std::string &payload)
+{
+    if (prefix.empty())
+    {
+        return false;
+    }
+
+    const std::string raw = prefix + payload;
+
+    if (is_server_)
+    {
+        auto clients = server_->getClients();
+        if (clients.empty())
+            return false;
+        for (auto &ws : clients)
+            ws->send(raw);
+        return true;
+    }
+    else
+    {
+        if (!client_)
+            return false;
+        client_->send(raw);
+        return true;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 状态查询
 // ---------------------------------------------------------------------------
@@ -308,9 +368,33 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     }
     else
     {
+        PrefixCallback matched_cb;
+        std::string matched_prefix;
+        {
+            std::lock_guard<std::mutex> lock(custom_prefix_mutex_);
+            for (const auto &entry : custom_prefix_cbs_)
+            {
+                const std::string &prefix = entry.first;
+                if (raw.rfind(prefix, 0) == 0)
+                {
+                    if (prefix.size() > matched_prefix.size())
+                    {
+                        matched_prefix = prefix;
+                        matched_cb = entry.second;
+                    }
+                }
+            }
+        }
+
+        if (matched_cb)
+        {
+            matched_cb(raw.substr(matched_prefix.size()), sender_id);
+            return;
+        }
+
         // 未知格式，忽略并打印警告
         std::cerr << "[SignalingChannel] Unknown message prefix, ignoring. "
-                    << "raw=" << raw.substr(0, 64) << "\n";
+                  << "raw=" << raw.substr(0, 64) << "\n";
     }
 }
 

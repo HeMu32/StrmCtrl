@@ -174,6 +174,23 @@ public:
      */
     void sendMessage(const std::string &text) override;
 
+    /**
+     * @brief 注册自定义前缀消息回调。
+     * @param prefix  前缀
+     * @param cb      回调（payload, sender_id）
+     * @return true 表示注册成功
+     */
+    bool registerPrefixCallback(const std::string &prefix,
+                                SignalingChannel::PrefixCallback cb);
+
+    /**
+     * @brief 发送自定义前缀消息。
+     * @param prefix   前缀
+     * @param payload  内容
+     * @return true 表示入队成功
+     */
+    bool sendPrefixedMessage(const std::string &prefix, const std::string &payload);
+
 private:
     // 内部回调处理
     void onSlaveConnected(const std::string &ip);

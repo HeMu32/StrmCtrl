@@ -6,6 +6,7 @@
  *   1. 从本地视频文件中解码视频和音频帧。
  *   2. 通过 strmctrl::Master 将帧编码为 H.264 和 AAC，并通过 RTP 推流给从端。
  *   3. 同时接收来自从端的文本消息，并在控制台发送文本消息给从端。
+ *   4. 演示了自定义前缀消息 ("gimb:") 的注册与打印，可通过输入 "gimb <text>" 发送。
  *
  * 用法：
  *   stream_master.exe <视频文件路径> [信令端口=11451] [RTP端口=11452] [--loop]
@@ -33,6 +34,8 @@
 
 #include <cerrno>
 const int FFMPEG_EAGAIN = EAGAIN;
+
+static constexpr const char *kGimbPrefix = "gimb:";
 
 #include <ixwebsocket/IXNetSystem.h>
 
@@ -317,8 +320,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    master.registerPrefixCallback(
+        kGimbPrefix,
+        [](const std::string &payload, const std::string &sender)
+        {
+            std::cout << "[GIMB from " << sender << "] " << payload << "\n";
+        });
+
     std::cout << "Master started. Listening on port " << sig_port << "...\n";
-    std::cout << "Type 'quit' to exit, or type a message to send to slave.";
+    std::cout << "Type 'quit' to exit, type 'gimb <text>' to send GIMB frame, or type a message to send to slave.";
 
     // no prompt mechanism, nothing to flush
 
@@ -493,6 +503,19 @@ int main(int argc, char **argv)
         if (line == "quit" || line == "exit")
         {
             break;
+        }
+        // recognize either "gimb <msg>" or "gimb:<msg>"
+        if (line.rfind("gimb", 0) == 0 && (line.size() == 4 || line[4] == ' ' || line[4] == ':'))
+        {
+            std::string payload;
+            if (line.size() > 5 && line[4] == ' ')
+                payload = line.substr(5);
+            else if (line.size() > 5 && line[4] == ':')
+                payload = line.substr(5);
+            else
+                payload.clear();
+            master.sendPrefixedMessage(kGimbPrefix, payload);
+            continue;
         }
         if (!line.empty())
         {

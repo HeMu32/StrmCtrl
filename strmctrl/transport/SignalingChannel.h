@@ -2,7 +2,9 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <ixwebsocket/IXWebSocket.h>
@@ -35,6 +37,9 @@ namespace strmctrl
 class SignalingChannel
 {
 public:
+    using PrefixCallback = std::function<void(const std::string &payload,
+                                              const std::string &sender_id)>;
+
     // -----------------------------------------------------------------------
     // 工厂方法
     // -----------------------------------------------------------------------
@@ -96,6 +101,29 @@ public:
      */
     void setVideoConfigCallback(std::function<void(const std::string &json)> cb);
 
+    /**
+     * @brief 注册自定义前缀回调。
+     *
+     * 收到以 `prefix` 开头的原始帧后，回调会被触发，参数 payload 为去掉前缀后的剩余字符串。
+     * 约束：`MSG:`/`SDP:`/`CFG:VIDEO`/`READY` 为保留前缀，不能注册。
+     * @param prefix  自定义消息前缀（非空）
+     * @param cb      回调函数
+     * @return true 注册成功；false 参数非法或前缀保留
+     */
+    bool registerPrefixCallback(const std::string &prefix, PrefixCallback cb);
+
+    /**
+     * @brief 取消注册自定义前缀回调。
+     * @param prefix  已注册的自定义前缀
+     * @return true 删除成功；false 未找到
+     */
+    bool unregisterPrefixCallback(const std::string &prefix);
+
+    /**
+     * @brief 清空所有自定义前缀回调。
+     */
+    void clearPrefixCallbacks();
+
     // -----------------------------------------------------------------------
     // 生命周期
     // -----------------------------------------------------------------------
@@ -151,6 +179,14 @@ public:
      */
     bool sendReady();
 
+    /**
+     * @brief 发送自定义前缀消息帧（线程安全）。
+     * @param prefix   消息前缀（非空）
+     * @param payload  前缀后的内容
+     * @return true 表示入队成功
+     */
+    bool sendPrefixed(const std::string &prefix, const std::string &payload);
+
     // -----------------------------------------------------------------------
     // 状态查询
     // -----------------------------------------------------------------------
@@ -191,6 +227,9 @@ private:
     std::function<void(const std::string &sdp)> sdp_cb_;
     std::function<void(const std::string &json)> video_cfg_cb_;
     std::function<void()> ready_cb_;
+
+    mutable std::mutex custom_prefix_mutex_;
+    std::unordered_map<std::string, PrefixCallback> custom_prefix_cbs_;
 
     // 消息前缀常量
     static constexpr const char *kMsgPrefix = "MSG:";

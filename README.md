@@ -15,3 +15,6 @@ that point the language server to `build/compile_commands.json`.
 Run:
   build/demo/demo_master.exe
   build/demo/demo_slave.exe
+
+The `stream_demo` applications also illustrate the new extensible messaging: type `gimb <text>` in either master or slave console to send a custom-prefixed `gimb:` frame, which the receiver prints.
+

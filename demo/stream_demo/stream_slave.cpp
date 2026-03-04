@@ -7,6 +7,7 @@
  *   2. 自动完成 SDP 协商并启动 RTP 视频流接收与解码。
  *   3. 通过 callback 接收解码后的视频帧，打印帧信息。
  *   4. 接收来自主端的文本消息，并可从控制台向主端发送消息。
+ *   5. 示例演示了自定义前缀消息 ("gimb:") 的接收与打印；输入 "gimb <text>" 即可发送。
  *
  * 用法：
  *   stream_slave.exe <主端IP> [信令端口=11451] [RTP接收端口段起点=11452]
@@ -30,6 +31,8 @@
 #include "strmctrl/Slave.h"
 #include "strmctrl/core/VideoFrame.h"
 #include "strmctrl/core/AudioFrame.h"
+
+static constexpr const char *kGimbPrefix = "gimb:";
 
 // ---------------------------------------------------------------------------
 // 帧信息打印辅助
@@ -141,9 +144,17 @@ int main(int argc, char *argv[])
         ix::uninitNetSystem();
         return 1;
     }
+
+    slave.registerPrefixCallback(
+        kGimbPrefix,
+        [](const std::string &payload, const std::string &sender)
+        {
+            std::cout << "[Slave GIMB from " << sender << "] " << payload << "\n";
+        });
+
     std::cout << "[Slave] Connecting to master at "
               << master_host << ":" << sig_port << " ...\n"
-              << "[Slave] Type a message and press Enter to send; 'quit' to exit.\n";
+              << "[Slave] Type a message and press Enter to send; 'gimb <text>' to send GIMB; 'quit' to exit.\n";
 
     // -----------------------------------------------------------------------
     // 帧消费线程：模拟音视频同步播放
@@ -198,6 +209,19 @@ int main(int argc, char *argv[])
                 running.store(false);
                 queue_cv.notify_all();
                 break;
+            }
+            // support "gimb <msg>" or "gimb:<msg>"
+            if (line.rfind("gimb", 0) == 0 && (line.size() == 4 || line[4] == ' ' || line[4] == ':'))
+            {
+                std::string payload;
+                if (line.size() > 5 && line[4] == ' ')
+                    payload = line.substr(5);
+                else if (line.size() > 5 && line[4] == ':')
+                    payload = line.substr(5);
+                else
+                    payload.clear();
+                slave.sendPrefixedMessage(kGimbPrefix, payload);
+                continue;
             }
             if (!line.empty()) {
                 slave.sendMessage(line);
