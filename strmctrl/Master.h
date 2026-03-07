@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <mutex>
+#include <unordered_map>
 
 #include "IMaster.h"
 #include "core/Callbacks.h"
@@ -221,6 +222,9 @@ private:
 
     MessageCallback msg_cb_;
     ConnectionCallback conn_cb_;
+
+    // 自定义前缀回调持久注册表：生命周期内始终有效，start() 时全量同步至 signaling_
+    std::unordered_map<std::string, SignalingChannel::PrefixCallback> prefix_cbs_;
 };
 
 } // namespace strmctrl

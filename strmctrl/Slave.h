@@ -6,6 +6,7 @@
 #include <string>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
 
 #include "ISlave.h"
 #include "core/Callbacks.h"
@@ -190,6 +191,9 @@ private:
     VideoFrameCallback video_cb_;
     AudioFrameCallback audio_cb_;
     ConnectionCallback conn_cb_;
+
+    // 自定义前缀回调持久注册表：生命周期内始终有效，connect() 时全量同步至 signaling_
+    std::unordered_map<std::string, SignalingChannel::PrefixCallback> prefix_cbs_;
 };
 
 } // namespace strmctrl

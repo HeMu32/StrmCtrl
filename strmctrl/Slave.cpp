@@ -69,6 +69,10 @@ bool Slave::connect(const std::string  &master_host,
     // 创建信令通道（客户端模式）
     signaling_ = SignalingChannel::createClient(master_host, signaling_port);
 
+    // 将持久注册表中的自定义前缀回调全量同步至信令通道
+    for (auto &[pfx, fn] : prefix_cbs_)
+        signaling_->registerPrefixCallback(pfx, fn);
+
     // 转发用户消息 callback
     if (msg_cb_)
         signaling_->setMessageCallback(msg_cb_);
@@ -177,11 +181,22 @@ void Slave::sendMessage(const std::string &text)
 bool Slave::registerPrefixCallback(const std::string &prefix,
                                    SignalingChannel::PrefixCallback cb)
 {
-    if (!signaling_)
-    {
+    // 镜像 SignalingChannel 的参数校验，确保 signaling_ 不存在时也能提前拦截无效输入
+    if (prefix.empty() || !cb)
         return false;
-    }
-    return signaling_->registerPrefixCallback(prefix, std::move(cb));
+    static const char *kReserved[] = {"READY", "MSG:", "SDP:", "CFG:VIDEO"};
+    for (auto r : kReserved)
+        if (prefix == r)
+            return false;
+
+    // 持久化：无论 signaling_ 是否存在，注册表始终保持最新
+    prefix_cbs_[prefix] = cb;
+
+    // 若信令通道已就绪，立即同步（同一 prefix 重复调用仅最后一次生效）
+    if (signaling_)
+        signaling_->registerPrefixCallback(prefix, std::move(cb));
+
+    return true;
 }
 
 bool Slave::sendPrefixedMessage(const std::string &prefix, const std::string &payload)
