@@ -18,3 +18,10 @@ Run:
 
 The `stream_demo` applications also illustrate the new extensible messaging: type `gimb <text>` in either master or slave console to send a custom-prefixed `gimb:` frame, which the receiver prints.
 
+> **Network initialization**: StrmCtrl uses IXWebSocket internally for signaling. 
+> Applications (including the provided demos and any shim-based host) must call 
+> `ix::initNetSystem()` once at startup and `ix::uninitNetSystem()` before exit. 
+> These global calls are not performed automatically by the library in order to 
+> avoid hidden side‑effects and to give the host control over the networking 
+> lifecycle.
+

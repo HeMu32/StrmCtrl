@@ -33,6 +33,11 @@ namespace strmctrl
  * ### 线程安全
  * 所有 callback 均在 IXWebSocket 的内部线程中调用；
  * send() 是线程安全的，可从任意线程调用。
+ *
+ * @note **网络初始化**：使用本类之前，调用方必须确保
+ *       `ix::initNetSystem()` 已被执行；程序退出前应调用
+ *       `ix::uninitNetSystem()`。该要求由 IXWebSocket 库本身强制，
+ *       StrmCtrl 不在构造或启动逻辑中自动处理。
  */
 class SignalingChannel
 {
