@@ -11,7 +11,7 @@ namespace strmctrl
 // 构造 / 析构
 // ---------------------------------------------------------------------------
 
-Slave::Slave() = default;
+Slave::Slave() : HostBase("slave") {}
 
 Slave::~Slave()
 {
@@ -21,13 +21,6 @@ Slave::~Slave()
 // ---------------------------------------------------------------------------
 // 配置
 // ---------------------------------------------------------------------------
-
-void Slave::setMessageCallback(MessageCallback cb)
-{
-    msg_cb_ = cb;
-    if (signaling_)
-        signaling_->setMessageCallback(cb);
-}
 
 void Slave::setVideoFrameCallback(VideoFrameCallback cb)
 {
@@ -43,11 +36,6 @@ void Slave::setAudioFrameCallback(AudioFrameCallback cb)
     std::lock_guard<std::mutex> lock(rtp_mutex_);
     if (rtp_receiver_)
         rtp_receiver_->setAudioFrameCallback(cb);
-}
-
-void Slave::setConnectionCallback(ConnectionCallback cb)
-{
-    conn_cb_ = cb;
 }
 
 void Slave::setVideoConfigRequest(const VideoConfigRequest &req)
@@ -69,13 +57,7 @@ bool Slave::connect(const std::string  &master_host,
     // 创建信令通道（客户端模式）
     signaling_ = SignalingChannel::createClient(master_host, signaling_port);
 
-    // 将持久注册表中的自定义前缀回调全量同步至信令通道
-    for (auto &[pfx, fn] : prefix_cbs_)
-        signaling_->registerPrefixCallback(pfx, fn);
-
-    // 转发用户消息 callback
-    if (msg_cb_)
-        signaling_->setMessageCallback(msg_cb_);
+    applyStoredCallbacksToSignaling();
 
     // 连接状态 callback
     signaling_->setConnectionCallback(
@@ -170,43 +152,6 @@ void Slave::disconnect()
 // ---------------------------------------------------------------------------
 // 发送
 // ---------------------------------------------------------------------------
-
-void Slave::sendMessage(const std::string &text)
-{
-    if (!signaling_)
-        return;
-    signaling_->sendMessage(TextMessage::make(text, "slave"));
-}
-
-bool Slave::registerPrefixCallback(const std::string &prefix,
-                                   SignalingChannel::PrefixCallback cb)
-{
-    // 镜像 SignalingChannel 的参数校验，确保 signaling_ 不存在时也能提前拦截无效输入
-    if (prefix.empty() || !cb)
-        return false;
-    static const char *kReserved[] = {"READY", "MSG:", "SDP:", "CFG:VIDEO"};
-    for (auto r : kReserved)
-        if (prefix == r)
-            return false;
-
-    // 持久化：无论 signaling_ 是否存在，注册表始终保持最新
-    prefix_cbs_[prefix] = cb;
-
-    // 若信令通道已就绪，立即同步（同一 prefix 重复调用仅最后一次生效）
-    if (signaling_)
-        signaling_->registerPrefixCallback(prefix, std::move(cb));
-
-    return true;
-}
-
-bool Slave::sendPrefixedMessage(const std::string &prefix, const std::string &payload)
-{
-    if (!signaling_)
-    {
-        return false;
-    }
-    return signaling_->sendPrefixed(prefix, payload);
-}
 
 // ---------------------------------------------------------------------------
 // 内部回调处理

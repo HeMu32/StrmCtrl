@@ -34,6 +34,8 @@ add_library(strmctrl STATIC
     transport/RtpReceiver.cpp
 
     # Facade layer
+    HostBase.h
+    HostBase.cpp
     Master.h
     Master.cpp
     Slave.h

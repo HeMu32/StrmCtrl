@@ -6,15 +6,13 @@
 #include <string>
 #include <mutex>
 #include <optional>
-#include <unordered_map>
+#include <thread>
 
 #include "ISlave.h"
+#include "HostBase.h"
 #include "core/Callbacks.h"
 #include "core/VideoConfig.h"
-#include "transport/SignalingChannel.h"
 #include "transport/RtpReceiver.h"
-
-#include <thread>
 
 namespace strmctrl
 {
@@ -59,7 +57,7 @@ namespace strmctrl
  * 主端回复 SDP 后，Slave 内部自动初始化 RtpReceiver 并启动接收线程。
  * 这一过程对调用方完全透明。
  */
-class Slave : public ISlave
+class Slave : public ISlave, public HostBase
 {
 public:
     // -----------------------------------------------------------------------
@@ -72,15 +70,14 @@ public:
     Slave(const Slave &) = delete;
     Slave &operator=(const Slave &) = delete;
 
+    // 显式 override：将 ISlave 纯虚函数连接到 HostBase 的具体实现
+    void setMessageCallback(MessageCallback cb) override    { HostBase::setMessageCallback(std::move(cb)); }
+    void setConnectionCallback(ConnectionCallback cb) override { HostBase::setConnectionCallback(std::move(cb)); }
+    void sendMessage(const std::string &text) override      { HostBase::sendMessage(text); }
+
     // -----------------------------------------------------------------------
     // 配置（在 connect() 之前设置）
     // -----------------------------------------------------------------------
-
-    /**
-     * @brief 注册来自主端的文本消息 callback。
-     * @param cb  消息到达时调用（在 IXWebSocket 内部线程中）
-     */
-    void setMessageCallback(MessageCallback cb) override;
 
     /**
      * @brief 注册解码视频帧 callback。
@@ -93,12 +90,6 @@ public:
      * @param cb  帧到达时调用（在 RtpReceiver 工作线程中，应尽快返回）
      */
     void setAudioFrameCallback(AudioFrameCallback cb) override;
-
-    /**
-     * @brief 注册连接状态变化 callback。
-     * @param cb  连接建立/断开时调用
-     */
-    void setConnectionCallback(ConnectionCallback cb) override;
 
     /**
      * @brief 设置视频参数请求（建议值）。
@@ -146,29 +137,6 @@ public:
     // 消息
     // -----------------------------------------------------------------------
 
-    /**
-     * @brief 向主端发送文本消息。
-     * @param text  消息内容
-     */
-    void sendMessage(const std::string &text) override;
-
-    /**
-     * @brief 注册自定义前缀消息回调。
-     * @param prefix  前缀
-     * @param cb      回调（payload, sender_id）
-     * @return true 表示注册成功
-     */
-    bool registerPrefixCallback(const std::string &prefix,
-                                SignalingChannel::PrefixCallback cb);
-
-    /**
-     * @brief 发送自定义前缀消息。
-     * @param prefix   前缀
-     * @param payload  内容
-     * @return true 表示入队成功
-     */
-    bool sendPrefixedMessage(const std::string &prefix, const std::string &payload);
-
 private:
     // 内部回调处理
     void onConnected();
@@ -181,19 +149,13 @@ private:
     VideoConfigRequest video_req_;
     std::optional<CodecConfig> negotiated_video_cfg_;
 
-    std::unique_ptr<SignalingChannel> signaling_;
     std::mutex rtp_mutex_;
     std::unique_ptr<RtpReceiver> rtp_receiver_;
     std::mutex init_mutex_;
     std::thread init_thread_;
 
-    MessageCallback msg_cb_;
     VideoFrameCallback video_cb_;
     AudioFrameCallback audio_cb_;
-    ConnectionCallback conn_cb_;
-
-    // 自定义前缀回调持久注册表：生命周期内始终有效，connect() 时全量同步至 signaling_
-    std::unordered_map<std::string, SignalingChannel::PrefixCallback> prefix_cbs_;
 };
 
 } // namespace strmctrl

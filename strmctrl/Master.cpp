@@ -10,7 +10,7 @@ namespace strmctrl
 // ---------------------------------------------------------------------------
 
 Master::Master()
-    : video_cfg_(CodecConfig::makeOpenH264()), active_video_cfg_(video_cfg_)
+    : HostBase("master"), video_cfg_(CodecConfig::makeOpenH264()), active_video_cfg_(video_cfg_)
 {
 }
 
@@ -37,18 +37,6 @@ void Master::setAudioConfig(const AudioConfig &cfg)
 {
     audio_cfg_ = cfg;
     has_audio_cfg_ = true;
-}
-
-void Master::setMessageCallback(MessageCallback cb)
-{
-    msg_cb_ = cb;
-    if (signaling_)
-        signaling_->setMessageCallback(cb);
-}
-
-void Master::setConnectionCallback(ConnectionCallback cb)
-{
-    conn_cb_ = std::move(cb);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,13 +71,7 @@ bool Master::start()
     // 创建信令通道（服务端模式）
     signaling_ = SignalingChannel::createServer(signaling_port_);
 
-    // 将持久注册表中的自定义前缀回调全量同步至信令通道
-    for (auto &[pfx, fn] : prefix_cbs_)
-        signaling_->registerPrefixCallback(pfx, fn);
-
-    // 转发用户消息 callback
-    if (msg_cb_)
-        signaling_->setMessageCallback(msg_cb_);
+    applyStoredCallbacksToSignaling();
 
     // 内部控制消息 callback
     signaling_->setSdpCallback([this](const std::string &sdp)
@@ -178,42 +160,6 @@ void Master::pushAudioFrame(const AudioFrame &frame)
     {
         std::cerr << "[Master] audio encode failed: " << audio_encoder_->lastError() << "\n";
     }
-}
-
-void Master::sendMessage(const std::string &text)
-{
-    if (signaling_)
-        signaling_->sendMessage(TextMessage::make(text, "master"));
-}
-
-bool Master::registerPrefixCallback(const std::string &prefix,
-                                    SignalingChannel::PrefixCallback cb)
-{
-    // 镜像 SignalingChannel 的参数校验，确保 signaling_ 不存在时也能提前拦截无效输入
-    if (prefix.empty() || !cb)
-        return false;
-    static const char *kReserved[] = {"READY", "MSG:", "SDP:", "CFG:VIDEO"};
-    for (auto r : kReserved)
-        if (prefix == r)
-            return false;
-
-    // 持久化：无论 signaling_ 是否存在，注册表始终保持最新
-    prefix_cbs_[prefix] = cb;
-
-    // 若信令通道已就绪，立即同步（同一 prefix 重复调用仅最后一次生效）
-    if (signaling_)
-        signaling_->registerPrefixCallback(prefix, std::move(cb));
-
-    return true;
-}
-
-bool Master::sendPrefixedMessage(const std::string &prefix, const std::string &payload)
-{
-    if (!signaling_)
-    {
-        return false;
-    }
-    return signaling_->sendPrefixed(prefix, payload);
 }
 
 // ---------------------------------------------------------------------------

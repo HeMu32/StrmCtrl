@@ -5,13 +5,11 @@
 #include <memory>
 #include <string>
 #include <mutex>
-#include <unordered_map>
 
 #include "IMaster.h"
-#include "core/Callbacks.h"
+#include "HostBase.h"
 #include "codec/CodecConfig.h"
 #include "codec/AudioConfig.h"
-#include "transport/SignalingChannel.h"
 #include "transport/RtpSender.h"
 #include "codec/VideoEncoder.h"
 #include "codec/AudioEncoder.h"
@@ -66,7 +64,7 @@ namespace strmctrl
  * 然后自动回复 SDP 字符串；RtpSender 随后开始向从端推流。
  * 这一过程对调用方透明。
  */
-class Master : public IMaster
+class Master : public IMaster, public HostBase
 {
 public:
     // -----------------------------------------------------------------------
@@ -78,6 +76,11 @@ public:
 
     Master(const Master &) = delete;
     Master &operator=(const Master &) = delete;
+
+    // 显式 override：将 IMaster 纯虚函数连接到 HostBase 的具体实现
+    void setMessageCallback(MessageCallback cb) override    { HostBase::setMessageCallback(std::move(cb)); }
+    void setConnectionCallback(ConnectionCallback cb) override { HostBase::setConnectionCallback(std::move(cb)); }
+    void sendMessage(const std::string &text) override      { HostBase::sendMessage(text); }
 
     // -----------------------------------------------------------------------
     // 配置（必须在 start() 之前设置）
@@ -108,18 +111,6 @@ public:
      * @param cfg  AudioConfig 实例
      */
     void setAudioConfig(const AudioConfig &cfg) override;
-
-    /**
-     * @brief 注册来自从端的文本消息 callback。
-     * @param cb  消息到达时调用（在 IXWebSocket 内部线程中）
-     */
-    void setMessageCallback(MessageCallback cb) override;
-
-    /**
-     * @brief 注册连接状态变化 callback。
-     * @param cb  从端连接/断开时调用
-     */
-    void setConnectionCallback(ConnectionCallback cb) override;
 
     // -----------------------------------------------------------------------
     // 生命周期
@@ -169,29 +160,6 @@ public:
     // 消息
     // -----------------------------------------------------------------------
 
-    /**
-     * @brief 向所有已连接的从端广播文本消息。
-     * @param text  消息内容
-     */
-    void sendMessage(const std::string &text) override;
-
-    /**
-     * @brief 注册自定义前缀消息回调。
-     * @param prefix  前缀
-     * @param cb      回调（payload, sender_id）
-     * @return true 表示注册成功
-     */
-    bool registerPrefixCallback(const std::string &prefix,
-                                SignalingChannel::PrefixCallback cb);
-
-    /**
-     * @brief 发送自定义前缀消息。
-     * @param prefix   前缀
-     * @param payload  内容
-     * @return true 表示入队成功
-     */
-    bool sendPrefixedMessage(const std::string &prefix, const std::string &payload);
-
 private:
     // 内部回调处理
     void onSlaveConnected(const std::string &ip);
@@ -211,7 +179,6 @@ private:
     bool has_audio_cfg_ = false;
     AudioConfig audio_cfg_;
 
-    std::unique_ptr<SignalingChannel> signaling_;
     std::unique_ptr<VideoEncoder> video_encoder_;
     std::unique_ptr<AudioEncoder> audio_encoder_;
     std::mutex rtp_sender_mutex_;
@@ -219,12 +186,6 @@ private:
 
     std::string current_slave_ip_;
     bool rtp_ready_ = false;
-
-    MessageCallback msg_cb_;
-    ConnectionCallback conn_cb_;
-
-    // 自定义前缀回调持久注册表：生命周期内始终有效，start() 时全量同步至 signaling_
-    std::unordered_map<std::string, SignalingChannel::PrefixCallback> prefix_cbs_;
 };
 
 } // namespace strmctrl
