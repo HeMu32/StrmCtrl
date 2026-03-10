@@ -2,14 +2,15 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
-#include <string>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 
-#include "ISlave.h"
 #include "HostBase.h"
+#include "ISlave.h"
 #include "core/Callbacks.h"
 #include "core/VideoConfig.h"
 #include "transport/RtpReceiver.h"
@@ -39,7 +40,7 @@ namespace strmctrl
  *     // 尽快返回！如需处理，先 clone 后入队
  * });
  *
- * // 连接主端（阻断直到信令通道就绪）
+ * // 连接主端（阻塞直到信令通道就绪）
  * slave.connect("192.168.1.100", 11451, 11452);
  *
  * // 等待运行（主端推流期间 callback 持续被调用）
@@ -71,9 +72,9 @@ public:
     Slave &operator=(const Slave &) = delete;
 
     // 显式 override：将 ISlave 纯虚函数连接到 HostBase 的具体实现
-    void setMessageCallback(MessageCallback cb) override    { HostBase::setMessageCallback(std::move(cb)); }
+    void setMessageCallback(MessageCallback cb) override { HostBase::setMessageCallback(std::move(cb)); }
     void setConnectionCallback(ConnectionCallback cb) override { HostBase::setConnectionCallback(std::move(cb)); }
-    void sendMessage(const std::string &text) override      { HostBase::sendMessage(text); }
+    void sendMessage(const std::string &text) override { HostBase::sendMessage(text); }
 
     // -----------------------------------------------------------------------
     // 配置（在 connect() 之前设置）
@@ -111,7 +112,7 @@ public:
      * @brief 连接到主端。
      *
      * 启动信令通道（WebSocket 客户端）连接主端，连接建立后自动请求 SDP
-     * 并初始化 RTP 接收。该方法立即返回（非阻断），连接建立通过
+     * 并初始化 RTP 接收。该方法立即返回（非阻塞），连接建立通过
      * ConnectionCallback 通知。
      *
      * @param master_host       主端 IP 或主机名
@@ -120,8 +121,8 @@ public:
      * @return                  true 表示信令通道启动成功（连接可能尚未建立）
      */
     bool connect(const std::string &master_host,
-                    int signaling_port = 11451,
-                    int rtp_port = 11452);
+                 int signaling_port = 11451,
+                 int rtp_port = 11452);
 
     /**
      * @brief 断开与主端的连接。
@@ -131,11 +132,7 @@ public:
     void disconnect() override;
 
     /** @brief 是否已连接到主端。 */
-    bool isConnected() const noexcept override { return connected_; }
-
-    // -----------------------------------------------------------------------
-    // 消息
-    // -----------------------------------------------------------------------
+    bool isConnected() const noexcept override;
 
 private:
     // 内部回调处理
@@ -143,17 +140,16 @@ private:
     void onDisconnected();
     void onSdpReceived(const std::string &sdp);
 
+    mutable std::mutex state_mutex_;
+    mutable std::mutex frame_callback_mutex_;
     bool connected_ = false;
     int rtp_port_ = 11452;
     bool has_video_req_ = false;
+    std::uint64_t session_generation_ = 0;
     VideoConfigRequest video_req_;
     std::optional<CodecConfig> negotiated_video_cfg_;
-
-    std::mutex rtp_mutex_;
-    std::unique_ptr<RtpReceiver> rtp_receiver_;
-    std::mutex init_mutex_;
+    std::shared_ptr<RtpReceiver> rtp_receiver_;
     std::thread init_thread_;
-
     VideoFrameCallback video_cb_;
     AudioFrameCallback audio_cb_;
 };

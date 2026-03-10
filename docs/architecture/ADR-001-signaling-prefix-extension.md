@@ -38,3 +38,12 @@
 ## 后续
 
 - 若未来协议复杂度继续增长，可考虑引入显式消息类型字段（例如 JSON 包装）替代字符串前缀协议。
+
+## 补充说明（2026-03-10）
+
+本 ADR 的主决策保持不变，但结合后续并发与信令健壮性修复，当前实现相较最初版本新增了以下约束与语义：
+
+- `registerPrefixCallback` / `unregisterPrefixCallback` / `clearPrefixCallbacks` 与消息分发现在由同一组内部互斥保护；分发时先在锁内完成最长前缀匹配并复制回调，再在锁外执行，避免注册线程与 IXWebSocket 回调线程并发访问导致数据竞争。
+- `HostBase` 会持久化 prefix 注册表；当底层 `SignalingChannel` 因 `start()/stop()/connect()/disconnect()` 被替换或重建时，`applyStoredCallbacksToSignaling()` 会把已注册的 prefix 回调重新同步到底层信令通道。
+- 服务端当前只接受一个活动 slave 连接。第二个及之后的连接会被显式拒绝，因此自定义 prefix 回调只会对当前活动 slave 的消息生效，不再对所有已连接客户端并行生效。
+- `sendPrefixed()` / `sendPrefixedMessage()` 的返回值语义现为“本地 WebSocket 发送被接受或失败”；`true` 不代表远端应用已经确认接收。本 ADR 仍然不引入 ACK 或重传语义。

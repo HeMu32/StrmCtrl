@@ -25,3 +25,11 @@ The `stream_demo` applications also illustrate the new extensible messaging: typ
 > avoid hidden side‑effects and to give the host control over the networking 
 > lifecycle.
 
+> **Current signaling scope**: one `Master` supports one active `Slave` at a
+> time. A second slave connection is closed explicitly instead of sharing the
+> same RTP/signaling state.
+
+> **Message delivery semantics**: text and prefix signaling are best-effort.
+> A successful send return value means the local IXWebSocket transport accepted
+> the frame; it is not a remote ACK.
+

@@ -5,11 +5,10 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
+#include <ixwebsocket/IXConnectionState.h>
 #include <ixwebsocket/IXWebSocket.h>
 #include <ixwebsocket/IXWebSocketServer.h>
-#include <ixwebsocket/IXConnectionState.h>
 
 #include "../core/Callbacks.h"
 #include "../core/Message.h"
@@ -28,11 +27,16 @@ namespace strmctrl
  * 普通文本消息以 `MSG:` 开头，后接消息内容。
  * 内部 SDP 协商帧以 `SDP:` 开头，后接 SDP 字符串。
  * 视频协商结果帧以 `CFG:VIDEO` 开头，后接 JSON 字符串。
+ * READY 帧使用 `READY` 常量。
  * 这些前缀由本类内部处理，外部 caller 感知不到。
  *
  * ### 线程安全
- * 所有 callback 均在 IXWebSocket 的内部线程中调用；
- * send() 是线程安全的，可从任意线程调用。
+ * 所有 callback 注册与消息分发均受内部锁保护；
+ * send() 可从任意线程调用。
+ *
+ * ### 当前限制
+ * 服务端当前仅接受一个活动 slave 连接，后续连接会被显式拒绝。
+ * send* 的返回值仅表示“本地 WebSocket 发送接受成功”，不代表远端 ACK。
  *
  * @note **网络初始化**：使用本类之前，调用方必须确保
  *       `ix::initNetSystem()` 已被执行；程序退出前应调用
@@ -107,6 +111,12 @@ public:
     void setVideoConfigCallback(std::function<void(const std::string &json)> cb);
 
     /**
+     * @brief 注册 READY 内部帧回调。
+     * @param cb  收到 READY 帧时调用
+     */
+    void setReadyCallback(std::function<void()> cb);
+
+    /**
      * @brief 注册自定义前缀回调。
      *
      * 收到以 `prefix` 开头的原始帧后，回调会被触发，参数 payload 为去掉前缀后的剩余字符串。
@@ -150,37 +160,28 @@ public:
 
     /**
      * @brief 向对端发送文本消息（线程安全）。
-     *
-     * 服务端模式下会广播给所有已连接的从端；
-     * 客户端模式下发送给已连接的主端。
      * @param msg  待发送的文本消息
-     * @return     true 表示至少向一个连接成功入队；false 表示无活跃连接
+     * @return     true 表示至少有一个活跃连接本地发送成功；false 表示无活跃连接或本地发送失败
      */
     bool sendMessage(const TextMessage &msg);
 
     /**
      * @brief 发送内部 SDP 帧（由 RtpSender/RtpReceiver 使用，普通 caller 无需调用）。
      * @param sdp  SDP 字符串
-     * @return     true 表示入队成功
+     * @return     true 表示本地发送成功
      */
     bool sendSdp(const std::string &sdp);
 
     /**
      * @brief 发送视频协商结果帧（JSON 字符串）。
      * @param json  协商结果 JSON
-     * @return      true 表示入队成功
+     * @return      true 表示本地发送成功
      */
     bool sendVideoConfig(const std::string &json);
 
     /**
-     * @brief 注册 READY 内部帧回调（从端 RtpReceiver 就绪后通知主端）。
-     * @param cb  收到 READY 帧时调用
-     */
-    void setReadyCallback(std::function<void()> cb);
-
-    /**
      * @brief 发送内部 READY 帧，通知对端 RTP 接收端已就绪（线程安全）。
-     * @return true 表示入队成功
+     * @return true 表示本地发送成功
      */
     bool sendReady();
 
@@ -188,7 +189,7 @@ public:
      * @brief 发送自定义前缀消息帧（线程安全）。
      * @param prefix   消息前缀（非空）
      * @param payload  前缀后的内容
-     * @return true 表示入队成功
+     * @return true 表示本地发送成功
      */
     bool sendPrefixed(const std::string &prefix, const std::string &payload);
 
@@ -207,12 +208,18 @@ private:
     explicit SignalingChannel(bool is_server);
 
     // 统一消息分发：解析前缀后分发到对应 callback
-    void dispatchRawMessage(const std::string &raw,
-                            const std::string &sender_id);
+    void dispatchRawMessage(const std::string &raw, const std::string &sender_id);
 
     // 服务端内部连接回调安装
     void attachServerCallbacks(std::weak_ptr<ix::WebSocket> weakWs,
-                                std::shared_ptr<ix::ConnectionState> state);
+                               std::shared_ptr<ix::ConnectionState> state);
+
+    bool sendRaw(const std::string &raw);
+    bool sendRawServer(const std::string &raw);
+    bool sendRawClient(const std::string &raw);
+
+    ConnectionCallback connectionCallbackCopy() const;
+    std::shared_ptr<ix::WebSocket> activeServerClient() const;
 
     // -----------------------------------------------------------------------
     // 成员变量
@@ -227,20 +234,22 @@ private:
     std::unique_ptr<ix::WebSocket> client_;
 
     // 用户注册的 callbacks
+    mutable std::mutex callback_mutex_;
     MessageCallback msg_cb_;
     ConnectionCallback conn_cb_;
     std::function<void(const std::string &sdp)> sdp_cb_;
     std::function<void(const std::string &json)> video_cfg_cb_;
     std::function<void()> ready_cb_;
-
-    mutable std::mutex custom_prefix_mutex_;
     std::unordered_map<std::string, PrefixCallback> custom_prefix_cbs_;
+    std::string active_client_id_;
+    std::weak_ptr<ix::WebSocket> active_client_ws_;
 
     // 消息前缀常量
     static constexpr const char *kMsgPrefix = "MSG:";
     static constexpr const char *kSdpPrefix = "SDP:";
     static constexpr const char *kVideoCfgPrefix = "CFG:VIDEO";
     static constexpr const char *kReadyPrefix = "READY";
+    static constexpr const char *kSingleSlaveReason = "Only one slave supported";
 };
 
 } // namespace strmctrl

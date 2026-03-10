@@ -3,8 +3,8 @@
 #pragma once
 
 #include <memory>
-#include <string>
 #include <mutex>
+#include <string>
 
 #include "IMaster.h"
 #include "HostBase.h"
@@ -13,7 +13,6 @@
 #include "transport/RtpSender.h"
 #include "codec/VideoEncoder.h"
 #include "codec/AudioEncoder.h"
-
 #include "core/VideoConfig.h"
 
 extern "C"
@@ -60,8 +59,8 @@ namespace strmctrl
  * @endcode
  *
  * ### SDP 协商
- * 当有从端连接时，Master 会等待从端发送 "SDP_REQUEST" 内部控制消息，
- * 然后自动回复 SDP 字符串；RtpSender 随后开始向从端推流。
+ * 当有从端连接时，Master 会等待从端发送 SDP 请求内部控制消息，
+ * 然后自动回复 SDP 字符串并准备好 RtpSender。
  * 这一过程对调用方透明。
  */
 class Master : public IMaster, public HostBase
@@ -78,9 +77,9 @@ public:
     Master &operator=(const Master &) = delete;
 
     // 显式 override：将 IMaster 纯虚函数连接到 HostBase 的具体实现
-    void setMessageCallback(MessageCallback cb) override    { HostBase::setMessageCallback(std::move(cb)); }
+    void setMessageCallback(MessageCallback cb) override { HostBase::setMessageCallback(std::move(cb)); }
     void setConnectionCallback(ConnectionCallback cb) override { HostBase::setConnectionCallback(std::move(cb)); }
-    void sendMessage(const std::string &text) override      { HostBase::sendMessage(text); }
+    void sendMessage(const std::string &text) override { HostBase::sendMessage(text); }
 
     // -----------------------------------------------------------------------
     // 配置（必须在 start() 之前设置）
@@ -94,15 +93,13 @@ public:
 
     /**
      * @brief 设置 RTP 推流的目标端口（从端接收端口，默认 11452）。
-     *
-     * 主端推流时使用此端口作为目标端口，从端在同一端口上监听。
      * @param port  端口号
      */
     void setRtpPort(int port);
 
     /**
      * @brief 设置视频编码配置。
-     * @param cfg  CodecConfig 实例（默认为 libopenh264 1280x720@30fps 2Mbps）
+     * @param cfg  CodecConfig 实例
      */
     void setCodecConfig(const CodecConfig &cfg) override;
 
@@ -119,7 +116,7 @@ public:
     /**
      * @brief 启动 Master 服务。
      *
-     * 内部启动 WebSocket 服务器监听，并准备好编码器。
+     * 内部启动 WebSocket 服务监听，并准备好编码器。
      * @return true 表示成功；false 表示端口被占用或编码器初始化失败
      */
     bool start() override;
@@ -132,7 +129,7 @@ public:
     void stop() override;
 
     /** @brief Master 是否正在运行。 */
-    bool isRunning() const noexcept override { return running_; }
+    bool isRunning() const noexcept override;
 
     // -----------------------------------------------------------------------
     // 推流
@@ -143,7 +140,7 @@ public:
      *
      * 内部将帧送入 VideoEncoder，编码后通过 RtpSender 发送。
      * 若当前无从端连接或未完成 SDP 协商，帧将被丢弃。
-     * @param frame  解码后的视频帧（调用方保留所有权）
+     * @param frame  解码后的原始视频帧
      */
     void pushVideoFrame(const VideoFrame &frame) override;
 
@@ -152,40 +149,45 @@ public:
      *
      * 内部将帧送入 AudioEncoder，编码后通过 RtpSender 发送。
      * 若当前无从端连接或未完成 SDP 协商，帧将被丢弃。
-     * @param frame  解码后的音频帧（调用方保留所有权）
+     * @param frame  解码后的原始音频帧
      */
     void pushAudioFrame(const AudioFrame &frame) override;
 
-    // -----------------------------------------------------------------------
-    // 消息
-    // -----------------------------------------------------------------------
-
 private:
+    /**
+     * @brief sender 状态包装。
+     *
+     * 编码器回调只捕获这个状态对象，而不直接捕获 Master 本身，
+     * 以避免 stop()/重协商时悬空访问。
+     */
+    struct SenderState
+    {
+        std::mutex mutex;
+        std::shared_ptr<RtpSender> sender;
+    };
+
     // 内部回调处理
-    void onSlaveConnected(const std::string &ip);
+    void onSlaveConnected(const std::string &info);
     void onSlaveDisconnected();
     void onSdpRequest(const std::string &payload);
     void onReady();
 
-    // 绑定编码器输出到 RTP 发送器
-    void bindEncodersToSender();
+    static void closeSenderState(const std::shared_ptr<SenderState> &sender_state);
 
     int signaling_port_ = 11451;
     int rtp_port_ = 11452;
-    bool running_ = false;
 
+    mutable std::mutex state_mutex_;
+    bool running_ = false;
+    bool rtp_ready_ = false;
+    bool has_audio_cfg_ = false;
+    std::string current_slave_ip_;
     CodecConfig video_cfg_;
     CodecConfig active_video_cfg_;
-    bool has_audio_cfg_ = false;
     AudioConfig audio_cfg_;
-
-    std::unique_ptr<VideoEncoder> video_encoder_;
-    std::unique_ptr<AudioEncoder> audio_encoder_;
-    std::mutex rtp_sender_mutex_;
-    std::unique_ptr<RtpSender> rtp_sender_;
-
-    std::string current_slave_ip_;
-    bool rtp_ready_ = false;
+    std::shared_ptr<VideoEncoder> video_encoder_;
+    std::shared_ptr<AudioEncoder> audio_encoder_;
+    std::shared_ptr<SenderState> sender_state_;
 };
 
 } // namespace strmctrl

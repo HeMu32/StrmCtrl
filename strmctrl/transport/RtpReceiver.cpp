@@ -1,9 +1,10 @@
 #include "RtpReceiver.h"
 
-#include <cstring>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <sstream>
 
 extern "C"
 {
@@ -14,38 +15,72 @@ extern "C"
 namespace strmctrl
 {
 
+namespace
+{
+
 // ---------------------------------------------------------------------------
 // 辅助
 // ---------------------------------------------------------------------------
-static std::string avErrStrRecv(int err)
+
+std::atomic<std::uint64_t> g_temp_sdp_counter{0};
+
+std::string avErrStrRecv(int err)
 {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(err, buf, sizeof(buf));
     return std::string(buf);
 }
 
+std::string makeUniqueTempSdpPath()
+{
+    std::error_code ec;
+    auto temp_dir = std::filesystem::temp_directory_path(ec);
+    if (ec)
+        temp_dir = std::filesystem::current_path(ec);
+    if (ec)
+        temp_dir = ".";
+
+    const auto unique_id =
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+        "_" + std::to_string(g_temp_sdp_counter.fetch_add(1));
+    return (temp_dir / ("strmctrl_recv_" + unique_id + ".sdp")).string();
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // 构造 / 析构
 // ---------------------------------------------------------------------------
 
-RtpReceiver::RtpReceiver() = default;
+RtpReceiver::RtpReceiver()
+{
+    video_decoder_.setFrameCallback(
+        [this](const VideoFrame &frame)
+        {
+            auto cb = videoFrameCallbackCopy();
+            if (cb)
+                cb(frame);
+        });
+}
 
 RtpReceiver::~RtpReceiver()
 {
     stop();
+
     if (fmt_ctx_)
     {
-        // 清理 interrupt callback
         fmt_ctx_->interrupt_callback.callback = nullptr;
         fmt_ctx_->interrupt_callback.opaque = nullptr;
         avformat_close_input(&fmt_ctx_);
     }
-    // Delete TimeoutContext if allocated
+
     if (timeout_ctx_)
     {
         delete timeout_ctx_;
         timeout_ctx_ = nullptr;
     }
+
+    cleanupTempSdpFile();
 }
 
 // ---------------------------------------------------------------------------
@@ -54,17 +89,19 @@ RtpReceiver::~RtpReceiver()
 
 void RtpReceiver::setVideoFrameCallback(VideoFrameCallback cb)
 {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     video_cb_ = std::move(cb);
-    video_decoder_.setFrameCallback(video_cb_);
 }
 
 void RtpReceiver::setAudioFrameCallback(AudioFrameCallback cb)
 {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     audio_cb_ = std::move(cb);
 }
 
 void RtpReceiver::setErrorCallback(std::function<void(const std::string &)> cb)
 {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
     error_cb_ = std::move(cb);
 }
 
@@ -74,51 +111,53 @@ void RtpReceiver::setErrorCallback(std::function<void(const std::string &)> cb)
 
 bool RtpReceiver::openWithSdp(const std::string &sdp)
 {
-    // FFmpeg 通过 "data URI" 方式或临时 .sdp 文件加载 SDP。
-    // 这里将 SDP 写入临时文件，再以 "sdp" 格式打开。
-    // Windows 下使用 %TEMP% 目录。
-    const char *tmp_dir = std::getenv("TEMP");
-    if (!tmp_dir)
-        tmp_dir = ".";
-    const std::string sdp_path = std::string(tmp_dir) + "\\strmctrl_recv.sdp";
+    cleanupTempSdpFile();
 
+    const std::string sdp_path = makeUniqueTempSdpPath();
     {
         // SDP 规范（RFC 4566）要求每行以 \r\n 结尾。
         // WebSocket 传输可能把 \r\n 变成 \n，写文件前统一规范化。
-        std::string sdp_normalized;
-        sdp_normalized.reserve(sdp.size() + 32);
+        std::string normalized_sdp;
+        normalized_sdp.reserve(sdp.size() + 32);
         for (std::size_t i = 0; i < sdp.size(); ++i)
         {
             if (sdp[i] == '\n' && (i == 0 || sdp[i - 1] != '\r'))
-            {
-                sdp_normalized += '\r';
-            }
-            sdp_normalized += sdp[i];
+                normalized_sdp += '\r';
+
+            normalized_sdp += sdp[i];
         }
 
-        // 以二进制模式写入，防止 Windows 再次转换换行符
-        std::ofstream f(sdp_path, std::ios::trunc | std::ios::binary);
-        if (!f)
+        std::ofstream file(sdp_path, std::ios::trunc | std::ios::binary);
+        if (!file)
         {
+            std::lock_guard<std::mutex> lock(state_mutex_);
             last_error_ = "Cannot write temporary SDP file: " + sdp_path;
             return false;
         }
-        f << sdp_normalized;
+
+        file << normalized_sdp;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        temp_sdp_path_ = sdp_path;
     }
 
     std::cout << "[RtpReceiver] SDP written to: " << sdp_path << "\n"
-                << "--- SDP BEGIN ---\n"
-                << sdp << "\n--- SDP END ---\n"
-                << std::flush;
+              << "--- SDP BEGIN ---\n"
+              << sdp << "\n--- SDP END ---\n"
+              << std::flush;
 
-    return openWithUrl(sdp_path, -1 /* 由 SDP 指定端口，传 -1 表示 URL 模式 */);
+    return openWithUrl(sdp_path, -1);
 }
 
 bool RtpReceiver::openWithUrl(const std::string &host, int port)
 {
+    if (port != -1)
+        cleanupTempSdpFile();
+
     if (fmt_ctx_)
     {
-        // Clear interrupt first
         fmt_ctx_->interrupt_callback.callback = nullptr;
         fmt_ctx_->interrupt_callback.opaque = nullptr;
         avformat_close_input(&fmt_ctx_);
@@ -139,15 +178,17 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
     fmt_ctx_ = avformat_alloc_context();
     if (!fmt_ctx_)
     {
+        std::lock_guard<std::mutex> lock(state_mutex_);
         last_error_ = "avformat_alloc_context failed";
         return false;
     }
 
-    // Set interrupt callback
     timeout_ctx_ = new TimeoutContext;
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count();
     timeout_ctx_->last_activity_ts.store(now_ms);
-    timeout_ctx_->timeout_ms = 5000; // 5s timeout
+    timeout_ctx_->timeout_ms = 5000;
 
     fmt_ctx_->interrupt_callback.callback = [](void *opaque) -> int
     {
@@ -155,16 +196,11 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
         if (!ctx)
             return 0;
 
-        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        int64_t diff = now_ms - ctx->last_activity_ts.load();
-
-        if (diff > ctx->timeout_ms)
-        {
-            // Uncomment to debug timeouts:
-            // std::cerr << "[RtpReceiver] Interrupt callback timed out! diff=" << diff << "ms\n";
-            return 1; // Interrupt
-        }
-        return 0; // Continue
+        auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                       .count();
+        const auto diff = now - ctx->last_activity_ts.load();
+        return diff > ctx->timeout_ms ? 1 : 0;
     };
     fmt_ctx_->interrupt_callback.opaque = timeout_ctx_;
 
@@ -183,15 +219,15 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
     av_dict_set(&opts, "rw_timeout", "5000000", 0);
 
     std::string url;
-    const AVInputFormat *in_fmt = nullptr;
-
+    const AVInputFormat *input_format = nullptr;
     if (port == -1)
     {
         // SDP 模式：host 实际上是 sdp 文件路径
         url = host;
-        in_fmt = av_find_input_format("sdp");
-        if (!in_fmt)
+        input_format = av_find_input_format("sdp");
+        if (!input_format)
         {
+            std::lock_guard<std::mutex> lock(state_mutex_);
             last_error_ = "av_find_input_format('sdp') failed";
             av_dict_free(&opts);
             return false;
@@ -203,80 +239,43 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
         url = "rtp://" + host + ":" + std::to_string(port);
     }
 
-    // -------------------------------------------------------------
-    // FFmpeg debug logging can be very helpful when avformat_open_input
-    // fails (e.g. a UDP bind error).  By default these messages go to
-    // stderr and are invisible to callers.  We temporarily install a
-    // custom log callback that accumulates the text so we can append
-    // it to last_error_ if open() returns failure.
-    //
-    // Note: av_log_set_callback is global, so we capture and restore
-    // the previous callback to avoid disturbing other parts of the
-    // application.  We use a thread-local string buffer since FFmpeg
-    // doesn't provide a user context pointer.
-
-    static thread_local std::string s_ffmpeg_log;
-    // capture callback (no captures so convertible to function pointer)
-    auto capture_cb = [](void * /*ptr*/, int level, const char *fmt, va_list vl)
-    {
-        char buf[1024];
-        vsnprintf(buf, sizeof(buf), fmt, vl);
-        s_ffmpeg_log += buf;
-    };
-
-    // install our capture callback and clear buffer
-    s_ffmpeg_log.clear();
-    av_log_set_callback(capture_cb);
-
-    int ret = avformat_open_input(&fmt_ctx_, url.c_str(), in_fmt, &opts);
-
-    // restore default logging behaviour (original callback can't be
-    // retrieved on older FFmpeg, so just go back to the default)
-    av_log_set_callback(av_log_default_callback);
-
-    // if the open failed, add any captured log text to last_error_
-    if (ret < 0 && !s_ffmpeg_log.empty())
-    {
-        if (!last_error_.empty())
-            last_error_ += " | ";
-        last_error_ += "ffmpeg log: ";
-        last_error_ += s_ffmpeg_log;
-    }
-
+    const int open_ret = avformat_open_input(&fmt_ctx_, url.c_str(), input_format, &opts);
     av_dict_free(&opts);
 
-    if (ret < 0)
+    if (open_ret < 0)
     {
-        // last_error_ may already contain the log appended above
-        if (last_error_.empty())
-            last_error_ = "avformat_open_input(" + url + "): " + avErrStrRecv(ret);
-
-        if (fmt_ctx_->interrupt_callback.opaque)
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        last_error_ = "avformat_open_input(" + url + "): " + avErrStrRecv(open_ret);
+        if (fmt_ctx_)
         {
-            delete static_cast<TimeoutContext *>(fmt_ctx_->interrupt_callback.opaque);
-            fmt_ctx_->interrupt_callback.opaque = nullptr;
+            if (fmt_ctx_->interrupt_callback.opaque)
+            {
+                delete static_cast<TimeoutContext *>(fmt_ctx_->interrupt_callback.opaque);
+                fmt_ctx_->interrupt_callback.opaque = nullptr;
+            }
+            avformat_free_context(fmt_ctx_);
+            fmt_ctx_ = nullptr;
         }
-        avformat_free_context(fmt_ctx_);
-        fmt_ctx_ = nullptr;
         return false;
     }
 
-    // 查找流信息
-    ret = avformat_find_stream_info(fmt_ctx_, nullptr);
-    if (ret < 0)
+    const int stream_info_ret = avformat_find_stream_info(fmt_ctx_, nullptr);
+    if (stream_info_ret < 0)
     {
         std::cerr << "[RtpReceiver] Warning: avformat_find_stream_info returned "
-                    << ret << " (" << avErrStrRecv(ret) << "). Continuing anyway.\n";
+                  << stream_info_ret << " (" << avErrStrRecv(stream_info_ret)
+                  << "). Continuing anyway.\n";
     }
 
-    // 更新 interrupt callback 的超时
+    // 更新 interrupt callback 的超时。
     // 这里我们不删除它，而是更新时间戳，这样后续 workerThread 可以持续使用它
     if (timeout_ctx_)
     {
-        // 更新最后活动时间
-        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        timeout_ctx_->last_activity_ts.store(now_ms);
-        // 设置较长的超时（如 10秒），避免短暂网络抖动误杀
+        const auto refreshed_now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count();
+        timeout_ctx_->last_activity_ts.store(refreshed_now_ms);
+        // 设置较长的超时（如 10 秒），避免短暂网络抖动误杀
         timeout_ctx_->timeout_ms = 10000;
     }
 
@@ -286,9 +285,10 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
         AVStream *stream = fmt_ctx_->streams[i];
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_idx_ == -1)
         {
-            video_stream_idx_ = i;
+            video_stream_idx_ = static_cast<int>(i);
             if (!video_decoder_.openWithParameters(stream->codecpar))
             {
+                std::lock_guard<std::mutex> lock(state_mutex_);
                 last_error_ = "VideoDecoder open failed: " + video_decoder_.lastError();
                 return false;
             }
@@ -296,9 +296,10 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
         }
         else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_idx_ == -1)
         {
-            audio_stream_idx_ = i;
+            audio_stream_idx_ = static_cast<int>(i);
             if (!audio_decoder_.openWithParameters(stream->codecpar))
             {
+                std::lock_guard<std::mutex> lock(state_mutex_);
                 last_error_ = "AudioDecoder open failed: " + audio_decoder_.lastError();
                 return false;
             }
@@ -308,8 +309,14 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
 
     if (video_stream_idx_ == -1 && audio_stream_idx_ == -1)
     {
+        std::lock_guard<std::mutex> lock(state_mutex_);
         last_error_ = "No video or audio stream found in input";
         return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        last_error_.clear();
     }
 
     return true;
@@ -317,9 +324,7 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
 
 void RtpReceiver::start()
 {
-    if (running_.load())
-        return;
-    if (!fmt_ctx_)
+    if (running_.load() || !fmt_ctx_)
         return;
 
     running_.store(true);
@@ -333,9 +338,13 @@ void RtpReceiver::stop()
 
     running_.store(false);
     if (thread_.joinable())
-    {
         thread_.join();
-    }
+}
+
+std::string RtpReceiver::lastError() const noexcept
+{
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return last_error_;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,8 +356,7 @@ void RtpReceiver::workerThread()
     AVPacket *pkt = av_packet_alloc();
     if (!pkt)
     {
-        if (error_cb_)
-            error_cb_("av_packet_alloc failed");
+        reportError("av_packet_alloc failed");
         return;
     }
 
@@ -360,12 +368,14 @@ void RtpReceiver::workerThread()
 
     while (running_.load())
     {
-        int ret = av_read_frame(fmt_ctx_, pkt);
+        const int ret = av_read_frame(fmt_ctx_, pkt);
 
         // 更新 watch dog
         if (timeout_ctx_)
         {
-            auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
             timeout_ctx_->last_activity_ts.store(now_ms);
         }
 
@@ -377,10 +387,11 @@ void RtpReceiver::workerThread()
             const bool is_eof = (ret == AVERROR_EOF);
             const bool is_transient = (is_eagain || is_eintr || is_timeout || is_eof);
 
-            auto now = std::chrono::steady_clock::now();
+            const auto now = std::chrono::steady_clock::now();
             if (now - last_packet_time > std::chrono::seconds(2))
             {
-                std::cout << "[RtpReceiver] idle: no packets for 2000ms. last_error=" << avErrStrRecv(ret) << "\n";
+                std::cout << "[RtpReceiver] idle: no packets for 2000ms. last_error="
+                          << avErrStrRecv(ret) << "\n";
                 last_packet_time = now;
             }
 
@@ -389,21 +400,19 @@ void RtpReceiver::workerThread()
                 if ((is_timeout || is_eof) && (++error_count % 50 == 1))
                 {
                     std::cout << "[RtpReceiver] transient read error count=" << error_count
-                                << " last=" << avErrStrRecv(ret) << "\n";
+                              << " last=" << avErrStrRecv(ret) << "\n";
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
 
             consecutive_errors++;
-            if (error_cb_)
-            {
-                error_cb_("av_read_frame error: " + avErrStrRecv(ret));
-            }
+            reportError("av_read_frame error: " + avErrStrRecv(ret));
             if (consecutive_errors % 10 == 1)
             {
-                std::cerr << "[RtpReceiver] av_read_frame error count=" << consecutive_errors
-                            << " last=" << avErrStrRecv(ret) << "\n";
+                std::cerr << "[RtpReceiver] av_read_frame error count="
+                          << consecutive_errors
+                          << " last=" << avErrStrRecv(ret) << "\n";
             }
             if (consecutive_errors > 50)
             {
@@ -420,37 +429,84 @@ void RtpReceiver::workerThread()
         if (pkt->stream_index == video_stream_idx_)
         {
             ++video_packets;
-            last_packet_time = std::chrono::steady_clock::now();
             if (!video_decoder_.decode(pkt))
             {
                 // decode 内部会调用 callback，这里只处理致命错误
                 // 忽略 EAGAIN
+                // Decoder reports errors through lastError(); keep streaming on soft failures.
             }
         }
         else if (pkt->stream_index == audio_stream_idx_)
         {
             ++audio_packets;
-            last_packet_time = std::chrono::steady_clock::now();
-            AudioFrame a_frame;
-            if (audio_decoder_.decode(pkt, a_frame))
+            AudioFrame audio_frame;
+            if (audio_decoder_.decode(pkt, audio_frame))
             {
-                if (audio_cb_)
-                {
-                    audio_cb_(a_frame);
-                }
+                auto cb = audioFrameCallbackCopy();
+                if (cb)
+                    cb(audio_frame);
             }
         }
 
         if ((video_packets + audio_packets) % 100 == 1)
         {
             std::cout << "[RtpReceiver] packets v=" << video_packets
-                        << " a=" << audio_packets << "\n";
+                      << " a=" << audio_packets << "\n";
         }
 
         av_packet_unref(pkt);
     }
 
     av_packet_free(&pkt);
+}
+
+// ---------------------------------------------------------------------------
+// 内部辅助
+// ---------------------------------------------------------------------------
+
+void RtpReceiver::cleanupTempSdpFile()
+{
+    std::string temp_sdp_path;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        temp_sdp_path.swap(temp_sdp_path_);
+    }
+
+    if (temp_sdp_path.empty())
+        return;
+
+    std::error_code ec;
+    std::filesystem::remove(temp_sdp_path, ec);
+}
+
+VideoFrameCallback RtpReceiver::videoFrameCallbackCopy() const
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    return video_cb_;
+}
+
+AudioFrameCallback RtpReceiver::audioFrameCallbackCopy() const
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    return audio_cb_;
+}
+
+std::function<void(const std::string &)> RtpReceiver::errorCallbackCopy() const
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    return error_cb_;
+}
+
+void RtpReceiver::reportError(const std::string &error)
+{
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        last_error_ = error;
+    }
+
+    auto cb = errorCallbackCopy();
+    if (cb)
+        cb(error);
 }
 
 } // namespace strmctrl

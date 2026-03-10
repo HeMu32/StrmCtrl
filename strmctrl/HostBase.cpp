@@ -18,13 +18,22 @@ HostBase::HostBase(std::string node_id)
 
 void HostBase::setMessageCallback(MessageCallback cb)
 {
-    msg_cb_ = cb;
-    if (signaling_)
-        signaling_->setMessageCallback(cb);
+    std::shared_ptr<SignalingChannel> signaling;
+    MessageCallback cb_copy;
+    {
+        std::lock_guard<std::mutex> lock(host_mutex_);
+        msg_cb_ = std::move(cb);
+        cb_copy = msg_cb_;
+        signaling = signaling_;
+    }
+
+    if (signaling)
+        signaling->setMessageCallback(std::move(cb_copy));
 }
 
 void HostBase::setConnectionCallback(ConnectionCallback cb)
 {
+    std::lock_guard<std::mutex> lock(host_mutex_);
     conn_cb_ = std::move(cb);
 }
 
@@ -34,8 +43,9 @@ void HostBase::setConnectionCallback(ConnectionCallback cb)
 
 void HostBase::sendMessage(const std::string &text)
 {
-    if (signaling_)
-        signaling_->sendMessage(TextMessage::make(text, node_id_));
+    auto signaling = signalingChannel();
+    if (signaling)
+        signaling->sendMessage(TextMessage::make(text, node_id_));
 }
 
 bool HostBase::registerPrefixCallback(const std::string &prefix,
@@ -44,17 +54,25 @@ bool HostBase::registerPrefixCallback(const std::string &prefix,
     // 镜像 SignalingChannel 的参数校验，确保 signaling_ 不存在时也能提前拦截无效输入
     if (prefix.empty() || !cb)
         return false;
-    static const char *kReserved[] = {"READY", "MSG:", "SDP:", "CFG:VIDEO"};
-    for (auto r : kReserved)
-        if (prefix == r)
-            return false;
 
-    // 持久化：无论 signaling_ 是否存在，注册表始终保持最新
-    prefix_cbs_[prefix] = cb;
+    static const char *kReserved[] = {"READY", "MSG:", "SDP:", "CFG:VIDEO"};
+    for (auto reserved : kReserved)
+    {
+        if (prefix == reserved)
+            return false;
+    }
+
+    std::shared_ptr<SignalingChannel> signaling;
+    {
+        // 持久化：无论 signaling_ 是否存在，注册表始终保持最新
+        std::lock_guard<std::mutex> lock(host_mutex_);
+        prefix_cbs_[prefix] = cb;
+        signaling = signaling_;
+    }
 
     // 若信令通道已就绪，立即同步（同一 prefix 重复调用仅最后一次生效）
-    if (signaling_)
-        signaling_->registerPrefixCallback(prefix, std::move(cb));
+    if (signaling)
+        return signaling->registerPrefixCallback(prefix, std::move(cb));
 
     return true;
 }
@@ -62,9 +80,11 @@ bool HostBase::registerPrefixCallback(const std::string &prefix,
 bool HostBase::sendPrefixedMessage(const std::string &prefix,
                                    const std::string &payload)
 {
-    if (!signaling_)
+    auto signaling = signalingChannel();
+    if (!signaling)
         return false;
-    return signaling_->sendPrefixed(prefix, payload);
+
+    return signaling->sendPrefixed(prefix, payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -73,11 +93,50 @@ bool HostBase::sendPrefixedMessage(const std::string &prefix,
 
 void HostBase::applyStoredCallbacksToSignaling()
 {
-    for (auto &[pfx, fn] : prefix_cbs_)
-        signaling_->registerPrefixCallback(pfx, fn);
+    std::shared_ptr<SignalingChannel> signaling;
+    std::unordered_map<std::string, SignalingChannel::PrefixCallback> prefix_cbs;
+    MessageCallback msg_cb;
+    {
+        std::lock_guard<std::mutex> lock(host_mutex_);
+        signaling = signaling_;
+        prefix_cbs = prefix_cbs_;
+        msg_cb = msg_cb_;
+    }
 
-    if (msg_cb_)
-        signaling_->setMessageCallback(msg_cb_);
+    if (!signaling)
+        return;
+
+    for (const auto &entry : prefix_cbs)
+        signaling->registerPrefixCallback(entry.first, entry.second);
+
+    if (msg_cb)
+        signaling->setMessageCallback(std::move(msg_cb));
+}
+
+void HostBase::setSignalingChannel(std::shared_ptr<SignalingChannel> signaling)
+{
+    std::lock_guard<std::mutex> lock(host_mutex_);
+    signaling_ = std::move(signaling);
+}
+
+std::shared_ptr<SignalingChannel> HostBase::signalingChannel() const
+{
+    std::lock_guard<std::mutex> lock(host_mutex_);
+    return signaling_;
+}
+
+std::shared_ptr<SignalingChannel> HostBase::resetSignalingChannel()
+{
+    std::lock_guard<std::mutex> lock(host_mutex_);
+    auto signaling = std::move(signaling_);
+    signaling_.reset();
+    return signaling;
+}
+
+ConnectionCallback HostBase::storedConnectionCallback() const
+{
+    std::lock_guard<std::mutex> lock(host_mutex_);
+    return conn_cb_;
 }
 
 } // namespace strmctrl

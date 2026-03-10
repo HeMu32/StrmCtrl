@@ -3,11 +3,12 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
-#include "../codec/VideoDecoder.h"
 #include "../codec/AudioDecoder.h"
+#include "../codec/VideoDecoder.h"
 #include "../core/Callbacks.h"
 
 extern "C"
@@ -67,7 +68,7 @@ public:
      * @brief 通过 SDP 字符串初始化 RTP 输入上下文。
      *
      * 将 SDP 写入临时文件，由 FFmpeg 以 sdp 格式解析流参数并初始化解码器。
-     * 该方法是阻断的，返回后即可调用 start()。
+     * 该方法是阻塞的，返回后即可调用 start()。
      *
      * @param sdp  SDP 字符串（由 RtpSender::generateSdp() 生成并经信令通道传输）
      * @return     true 表示成功；false 表示 FFmpeg 无法解析 SDP（见 lastError()）
@@ -103,32 +104,39 @@ public:
     // 访问器
     // -----------------------------------------------------------------------
 
-    std::string lastError() const noexcept { return last_error_; }
+    std::string lastError() const noexcept;
 
 private:
+    struct TimeoutContext
+    {
+        // steady_clock::now().time_since_epoch().count() (ms)
+        std::atomic<int64_t> last_activity_ts;
+        int timeout_ms;
+    };
+
     void workerThread();
+    void cleanupTempSdpFile();
+    VideoFrameCallback videoFrameCallbackCopy() const;
+    AudioFrameCallback audioFrameCallbackCopy() const;
+    std::function<void(const std::string &)> errorCallbackCopy() const;
+    void reportError(const std::string &error);
 
     AVFormatContext *fmt_ctx_ = nullptr;
     int video_stream_idx_ = -1;
     int audio_stream_idx_ = -1;
-
     VideoDecoder video_decoder_;
     AudioDecoder audio_decoder_;
 
+    mutable std::mutex callback_mutex_;
+    mutable std::mutex state_mutex_;
     VideoFrameCallback video_cb_;
     AudioFrameCallback audio_cb_;
     std::function<void(const std::string &)> error_cb_;
+    std::string last_error_;
+    std::string temp_sdp_path_;
 
     std::atomic<bool> running_{false};
     std::thread thread_;
-    std::string last_error_;
-
-    // TimeoutContext management
-    struct TimeoutContext
-    {
-        std::atomic<int64_t> last_activity_ts; // steady_clock::now().time_since_epoch().count() (ms)
-        int timeout_ms;
-    };
     TimeoutContext *timeout_ctx_ = nullptr;
 };
 
