@@ -6,6 +6,16 @@
 namespace strmctrl
 {
 
+namespace
+{
+
+// PTZ signaling is interactive and expects abrupt peer termination to be
+// surfaced quickly. A short heartbeat keeps the WebSocket state fresh without
+// relying on slow TCP half-open detection.
+constexpr int kSignalingHeartbeatIntervalSecs = 3;
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // 工厂方法
 // ---------------------------------------------------------------------------
@@ -14,7 +24,14 @@ std::unique_ptr<SignalingChannel>
 SignalingChannel::createServer(int port, const std::string &bind_addr)
 {
     auto ch = std::unique_ptr<SignalingChannel>(new SignalingChannel(true));
-    ch->server_ = std::make_unique<ix::WebSocketServer>(port, bind_addr);
+    ch->server_ = std::make_unique<ix::WebSocketServer>(
+        port,
+        bind_addr,
+        ix::SocketServer::kDefaultTcpBacklog,
+        ix::SocketServer::kDefaultMaxConnections,
+        ix::WebSocketServer::kDefaultHandShakeTimeoutSecs,
+        ix::SocketServer::kDefaultAddressFamily,
+        kSignalingHeartbeatIntervalSecs);
     return ch;
 }
 
@@ -24,6 +41,9 @@ SignalingChannel::createClient(const std::string &host, int port)
     auto ch = std::unique_ptr<SignalingChannel>(new SignalingChannel(false));
     ch->client_ = std::make_unique<ix::WebSocket>();
     ch->client_->setUrl("ws://" + host + ":" + std::to_string(port));
+    ch->client_->setPingInterval(kSignalingHeartbeatIntervalSecs);
+    ch->client_->setHandshakeTimeout(ix::WebSocketServer::kDefaultHandShakeTimeoutSecs);
+    ch->client_->disableAutomaticReconnection();
     return ch;
 }
 
