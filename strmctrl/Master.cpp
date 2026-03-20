@@ -325,22 +325,7 @@ void Master::onSdpRequest(const std::string &payload)
     }
 
     VideoConfigRequest req = parseVideoConfigRequest(request_payload);
-    // apply request but never change fps: master dictates the frame rate, to avoid complex resampling.
     auto active_video_cfg = applyVideoRequestWithCaps(base_video_cfg, req);
-    // enforce assertion - fps must remain equal to configured value
-    // (nothing the slave asks for should change this)
-    active_video_cfg.fps = base_video_cfg.fps;
-    if (active_video_cfg.fps != base_video_cfg.fps)
-    {
-        std::cerr << "[Master] warning: fps override ignored, "
-                  << "configured=" << base_video_cfg.fps
-                  << " requested=" << req.fps.value_or(-1) << "\n";
-        active_video_cfg.fps = base_video_cfg.fps;
-    }
-    // !!! ASSERTION !!!
-    // The negotiated video configuration sent back to the slave must
-    // *always* advertise the master's own fps value. Downstream code
-    // relies on this invariant to compute RTP timestamps.
 
     auto video_encoder = std::make_shared<VideoEncoder>(active_video_cfg);
     if (!video_encoder->open())

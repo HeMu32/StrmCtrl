@@ -70,6 +70,13 @@ public:
                                 SignalingChannel::PrefixCallback cb);
 
     /**
+     * @brief 取消注册自定义前缀消息回调。
+     * @param prefix  前缀
+     * @return true 表示已从持久化表或当前 signaling 中移除
+     */
+    bool unregisterPrefixCallback(const std::string &prefix);
+
+    /**
      * @brief 发送自定义前缀消息。
      * @param prefix   前缀
      * @param payload  内容

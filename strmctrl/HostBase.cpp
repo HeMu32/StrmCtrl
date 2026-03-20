@@ -77,6 +77,26 @@ bool HostBase::registerPrefixCallback(const std::string &prefix,
     return true;
 }
 
+bool HostBase::unregisterPrefixCallback(const std::string &prefix)
+{
+    if (prefix.empty())
+        return false;
+
+    std::shared_ptr<SignalingChannel> signaling;
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> lock(host_mutex_);
+        erased = prefix_cbs_.erase(prefix) > 0;
+        signaling = signaling_;
+    }
+
+    bool signaling_erased = false;
+    if (signaling)
+        signaling_erased = signaling->unregisterPrefixCallback(prefix);
+
+    return erased || signaling_erased;
+}
+
 bool HostBase::sendPrefixedMessage(const std::string &prefix,
                                    const std::string &payload)
 {

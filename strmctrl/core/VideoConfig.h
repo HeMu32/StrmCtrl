@@ -13,6 +13,7 @@ struct VideoConfigRequest {
     std::optional<int> width;
     std::optional<int> height;
     std::optional<int> fps;
+    std::optional<int> bitrate_kbps;
 };
 
 inline std::string trimCopy(const std::string& text)
@@ -49,6 +50,7 @@ inline VideoConfigRequest parseVideoConfigRequest(const std::string& payload)
     req.width  = findIntField(payload, "width");
     req.height = findIntField(payload, "height");
     req.fps    = findIntField(payload, "fps");
+    req.bitrate_kbps = findIntField(payload, "bitrate_kbps");
     return req;
 }
 
@@ -68,6 +70,11 @@ inline std::string serializeVideoConfigRequest(const VideoConfigRequest& req)
     if (req.fps.has_value()) {
         if (!first) out += ",";
         out += "\"fps\":" + std::to_string(*req.fps);
+        first = false;
+    }
+    if (req.bitrate_kbps.has_value()) {
+        if (!first) out += ",";
+        out += "\"bitrate_kbps\":" + std::to_string(*req.bitrate_kbps);
     }
     out += "}";
     return out;
@@ -83,18 +90,12 @@ inline CodecConfig applyVideoRequestWithCaps(const CodecConfig& base,
     if (req.height.has_value()) {
         result.height = std::min(*req.height, 1920);
     }
-    // NOTE: fps is *not* taken from the request.  the master always
-    // enforces its own configured frame rate; incoming requests may
-    // suggest something but we ignore it here.  this keeps the
-    // encoder time_base consistent and prevents PTS/DTS discontinuities
-    // when downstream code naively assumes the encoder fps is fixed.
-    // (The actual override happens in Master::onSdpRequest.)
-    //
-    // We still expose req.fps to callers via the negotiation protocol so
-    // that slaves can know what they asked for, but the master reply will
-    // always echo its own fps value.
-    //
-    // Assertion (documented elsewhere): result.fps == base.fps
+    if (req.fps.has_value()) {
+        result.fps = std::clamp(*req.fps, 1, 120);
+    }
+    if (req.bitrate_kbps.has_value()) {
+        result.bitrate_kbps = std::clamp(*req.bitrate_kbps, 64, 50000);
+    }
     return result;
 }
 

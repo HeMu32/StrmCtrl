@@ -159,6 +159,7 @@ void Slave::disconnect()
         std::lock_guard<std::mutex> lock(state_mutex_);
         connected_ = false;
         ++session_generation_;
+        negotiated_video_cfg_.reset();
         receiver = std::move(rtp_receiver_);
         init_thread = std::move(init_thread_);
     }
@@ -216,14 +217,23 @@ void Slave::onConnected()
 
 void Slave::onDisconnected()
 {
+    auto signaling = resetSignalingChannel();
     std::shared_ptr<RtpReceiver> receiver;
     std::thread init_thread;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         connected_ = false;
         ++session_generation_;
+        negotiated_video_cfg_.reset();
         receiver = std::move(rtp_receiver_);
         init_thread = std::move(init_thread_);
+    }
+
+    if (signaling)
+    {
+        signaling->setConnectionCallback(nullptr);
+        signaling->setSdpCallback(nullptr);
+        signaling->setVideoConfigCallback(nullptr);
     }
 
     if (init_thread.joinable())
