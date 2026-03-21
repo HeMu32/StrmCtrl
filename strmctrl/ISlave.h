@@ -23,7 +23,7 @@ public:
     virtual void setConnectionCallback(ConnectionCallback cb) = 0;
     virtual void setVideoConfigRequest(const VideoConfigRequest &req) = 0;
 
-    virtual const std::optional<CodecConfig> &negotiatedVideoConfig() const noexcept = 0;
+    virtual std::optional<CodecConfig> negotiatedVideoConfig() const noexcept = 0;
 
     virtual void disconnect() = 0;
     virtual bool isConnected() const noexcept = 0;

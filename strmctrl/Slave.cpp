@@ -187,6 +187,12 @@ bool Slave::isConnected() const noexcept
     return connected_;
 }
 
+std::optional<CodecConfig> Slave::negotiatedVideoConfig() const noexcept
+{
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return negotiated_video_cfg_;
+}
+
 // ---------------------------------------------------------------------------
 // 内部回调处理
 // ---------------------------------------------------------------------------

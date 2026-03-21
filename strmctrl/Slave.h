@@ -98,11 +98,8 @@ public:
      */
     void setVideoConfigRequest(const VideoConfigRequest &req) override;
 
-    /** @brief 获取 Master 返回的最终视频参数（如有）。 */
-    const std::optional<CodecConfig> &negotiatedVideoConfig() const noexcept override
-    {
-        return negotiated_video_cfg_;
-    }
+    /** @brief 获取 Master 返回的最终视频参数快照（如有）。 */
+    std::optional<CodecConfig> negotiatedVideoConfig() const noexcept override;
 
     // -----------------------------------------------------------------------
     // 生命周期
