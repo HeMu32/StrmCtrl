@@ -1,6 +1,7 @@
 #include "Slave.h"
 
 #include <iostream>
+#include <thread>
 
 namespace strmctrl
 {
@@ -13,6 +14,37 @@ std::shared_ptr<SignalingChannel> toShared(std::unique_ptr<SignalingChannel> sig
     return std::shared_ptr<SignalingChannel>(signaling.release());
 }
 
+void LogStrmCtrlSlaveLifecycle(const char* pszStage, const Slave* pSelf)
+{
+#if defined(_DEBUG)
+    std::cerr << "[Lifecycle][strmctrl::Slave] " << pszStage
+              << " this=" << pSelf
+              << " thread=" << std::this_thread::get_id()
+              << std::endl;
+#else
+    (void)pszStage;
+    (void)pSelf;
+#endif
+}
+
+void DisposeSignalingOffCallbackThread(std::shared_ptr<SignalingChannel> signaling)
+{
+    if (!signaling)
+        return;
+
+    std::thread(
+        [signaling = std::move(signaling)]() mutable
+        {
+#if defined(_DEBUG)
+            std::cerr << "[Lifecycle][strmctrl::Slave] async signaling dispose"
+                      << " signaling=" << signaling.get()
+                      << " thread=" << std::this_thread::get_id()
+                      << std::endl;
+#endif
+            signaling->stop();
+        }).detach();
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -22,11 +54,15 @@ std::shared_ptr<SignalingChannel> toShared(std::unique_ptr<SignalingChannel> sig
 Slave::Slave()
     : HostBase("slave")
 {
+    LogStrmCtrlSlaveLifecycle("ctor begin", this);
+    LogStrmCtrlSlaveLifecycle("ctor end", this);
 }
 
 Slave::~Slave()
 {
+    LogStrmCtrlSlaveLifecycle("dtor begin", this);
     disconnect();
+    LogStrmCtrlSlaveLifecycle("dtor end", this);
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +110,14 @@ void Slave::setVideoConfigRequest(const VideoConfigRequest &req)
 
 bool Slave::connect(const std::string &master_host, int signaling_port, int rtp_port)
 {
+    LogStrmCtrlSlaveLifecycle("connect begin", this);
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (connected_ || signalingChannel())
+        {
+            LogStrmCtrlSlaveLifecycle("connect end", this);
             return false;
+        }
 
         rtp_port_ = rtp_port;
         ++session_generation_;
@@ -140,9 +180,11 @@ bool Slave::connect(const std::string &master_host, int signaling_port, int rtp_
     {
         std::cerr << "SignalingChannel::start failed\n";
         resetSignalingChannel();
+        LogStrmCtrlSlaveLifecycle("connect end", this);
         return false;
     }
 
+    LogStrmCtrlSlaveLifecycle("connect end", this);
     return true;
 }
 
@@ -152,6 +194,7 @@ bool Slave::connect(const std::string &master_host, int signaling_port, int rtp_
 
 void Slave::disconnect()
 {
+    LogStrmCtrlSlaveLifecycle("disconnect begin", this);
     auto signaling = resetSignalingChannel();
     std::shared_ptr<RtpReceiver> receiver;
     std::thread init_thread;
@@ -179,6 +222,7 @@ void Slave::disconnect()
 
     if (signaling)
         signaling->stop();
+    LogStrmCtrlSlaveLifecycle("disconnect end", this);
 }
 
 bool Slave::isConnected() const noexcept
@@ -247,6 +291,16 @@ void Slave::onDisconnected()
 
     if (receiver)
         receiver->stop();
+
+    if (signaling)
+    {
+        // onDisconnected() can run on the IXWebSocket worker thread that owns
+        // the SignalingChannel client callback. Destroying the channel inline
+        // would run SignalingChannel::~SignalingChannel() on that same thread,
+        // and IXWebSocket::stop() would then try to join itself, which throws
+        // std::system_error("Resource deadlock avoided") and terminates.
+        DisposeSignalingOffCallbackThread(std::move(signaling));
+    }
 
     std::cout << "[Slave] Disconnected from master.\n";
 }

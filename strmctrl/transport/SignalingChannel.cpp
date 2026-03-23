@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <thread>
 
 namespace strmctrl
 {
@@ -157,6 +158,13 @@ bool SignalingChannel::start()
         [this](const ix::WebSocketMessagePtr &msg)
         {
             using T = ix::WebSocketMessageType;
+#if defined(_DEBUG)
+            std::cerr << "[Lifecycle][SignalingChannel] client message"
+                      << " this=" << this
+                      << " thread=" << std::this_thread::get_id()
+                      << " type=" << static_cast<int>(msg->type)
+                      << std::endl;
+#endif
             if (msg->type == T::Message)
             {
                 dispatchRawMessage(msg->str, client_->getUrl());
@@ -169,12 +177,26 @@ bool SignalingChannel::start()
             }
             else if (msg->type == T::Close)
             {
+#if defined(_DEBUG)
+                std::cerr << "[Lifecycle][SignalingChannel] client close"
+                          << " this=" << this
+                          << " thread=" << std::this_thread::get_id()
+                          << " reason=" << msg->closeInfo.reason
+                          << std::endl;
+#endif
                 auto cb = connectionCallbackCopy();
                 if (cb)
                     cb(false, msg->closeInfo.reason);
             }
             else if (msg->type == T::Error)
             {
+#if defined(_DEBUG)
+                std::cerr << "[Lifecycle][SignalingChannel] client error"
+                          << " this=" << this
+                          << " thread=" << std::this_thread::get_id()
+                          << " reason=" << msg->errorInfo.reason
+                          << std::endl;
+#endif
                 auto cb = connectionCallbackCopy();
                 if (cb)
                     cb(false, msg->errorInfo.reason);
