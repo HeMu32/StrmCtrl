@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <sstream>
 #include <thread>
 
 namespace strmctrl
@@ -17,7 +18,7 @@ namespace
 // relying on slow TCP half-open detection.
 constexpr int kSignalingHeartbeatIntervalSecs = 3;
 
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
 constexpr std::uint64_t kPerfLogEveryNMessages = 500;
 
 enum class EDispatchBranch : std::uint8_t
@@ -105,6 +106,15 @@ void LogSignalingPerfSnapshot(const char* pszRole, const TSignalingPerfCounters&
               << " lockWaitAvgUs=" << (nDispatchTotal == 0 ? 0 : (stPerf.nDispatchLockWaitTotalUs.load(std::memory_order_relaxed) / nDispatchTotal))
               << " lockWaitMaxUs=" << stPerf.nDispatchLockWaitMaxUs.load(std::memory_order_relaxed)
               << std::endl;
+}
+
+void LogSignalingLifecycleText(const std::string& sMsg)
+{
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+    std::cerr << sMsg << std::endl;
+#else
+    (void)sMsg;
+#endif
 }
 
 void FlushSignalingPerfIfNeeded(bool bIsServer)
@@ -334,11 +344,11 @@ bool SignalingChannel::start()
     client_->setOnMessageCallback(
         [this](const ix::WebSocketMessagePtr &msg)
         {
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
             const auto tpCbBegin = std::chrono::steady_clock::now();
 #endif
             using T = ix::WebSocketMessageType;
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_SIGNALING_TRACE)
 /*
             std::cerr << "[Lifecycle][SignalingChannel] client message"
                       << " this=" << this
@@ -359,12 +369,13 @@ bool SignalingChannel::start()
             }
             else if (msg->type == T::Close)
             {
-#if defined(_DEBUG)
-                std::cerr << "[Lifecycle][SignalingChannel] client close"
-                          << " this=" << this
-                          << " thread=" << std::this_thread::get_id()
-                          << " reason=" << msg->closeInfo.reason
-                          << std::endl;
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+                std::ostringstream oss;
+                oss << "[Lifecycle][SignalingChannel] client close"
+                    << " this=" << this
+                    << " thread=" << std::this_thread::get_id()
+                    << " reason=" << msg->closeInfo.reason;
+                LogSignalingLifecycleText(oss.str());
 #endif
                 auto cb = connectionCallbackCopy();
                 if (cb)
@@ -372,18 +383,19 @@ bool SignalingChannel::start()
             }
             else if (msg->type == T::Error)
             {
-#if defined(_DEBUG)
-                std::cerr << "[Lifecycle][SignalingChannel] client error"
-                          << " this=" << this
-                          << " thread=" << std::this_thread::get_id()
-                          << " reason=" << msg->errorInfo.reason
-                          << std::endl;
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+                std::ostringstream oss;
+                oss << "[Lifecycle][SignalingChannel] client error"
+                    << " this=" << this
+                    << " thread=" << std::this_thread::get_id()
+                    << " reason=" << msg->errorInfo.reason;
+                LogSignalingLifecycleText(oss.str());
 #endif
                 auto cb = connectionCallbackCopy();
                 if (cb)
                     cb(false, msg->errorInfo.reason);
             }
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
             RecordWsCallbackPerf(
                 false,
                 msg->type,
@@ -412,7 +424,7 @@ void SignalingChannel::stop()
         client_->stop();
     }
 
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
     FlushSignalingPerfIfNeeded(is_server_);
 #endif
 }
@@ -476,7 +488,7 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
 {
     using namespace std::chrono;
 
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
     const auto tpDispatchBegin = std::chrono::steady_clock::now();
 #endif
 
@@ -489,11 +501,11 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
 
     std::uint64_t uiLockWaitUs = 0;
     {
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
         const auto tpLockBegin = std::chrono::steady_clock::now();
 #endif
         std::lock_guard<std::mutex> lock(callback_mutex_);
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
         uiLockWaitUs = ToUs(std::chrono::steady_clock::now() - tpLockBegin);
 #endif
         if (raw.rfind(kMsgPrefix, 0) == 0)
@@ -536,7 +548,7 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
                               system_clock::now().time_since_epoch())
                               .count();
         msg_cb(tm);
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
         RecordDispatchPerf(
             is_server_,
             EDispatchBranch::Msg,
@@ -550,7 +562,7 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     {
         // 内部 SDP 帧
         sdp_cb(raw.substr(std::string(kSdpPrefix).size()));
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
         RecordDispatchPerf(
             is_server_,
             EDispatchBranch::Sdp,
@@ -563,7 +575,7 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     if (video_cfg_cb)
     {
         video_cfg_cb(raw.substr(std::string(kVideoCfgPrefix).size()));
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
         RecordDispatchPerf(
             is_server_,
             EDispatchBranch::VideoCfg,
@@ -577,7 +589,7 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     {
         // 从端 RTP 接收端就绪通知
         ready_cb();
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
         RecordDispatchPerf(
             is_server_,
             EDispatchBranch::Ready,
@@ -590,7 +602,7 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     if (matched_cb)
     {
         matched_cb(raw.substr(matched_prefix.size()), sender_id);
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
         RecordDispatchPerf(
             is_server_,
             EDispatchBranch::Prefix,
@@ -603,7 +615,7 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     // 未知格式，忽略并打印警告
     std::cerr << "[SignalingChannel] Unknown message prefix, ignoring. "
               << "raw=" << raw.substr(0, 64) << "\n";
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
     RecordDispatchPerf(
         is_server_,
         EDispatchBranch::Unknown,
@@ -658,7 +670,7 @@ void SignalingChannel::attachServerCallbacks(
     ws->setOnMessageCallback(
         [this, weakWs, remote_addr, client_id](const ix::WebSocketMessagePtr &msg)
         {
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
             const auto tpCbBegin = std::chrono::steady_clock::now();
 #endif
             using T = ix::WebSocketMessageType;
@@ -671,7 +683,7 @@ void SignalingChannel::attachServerCallbacks(
                 }
                 if (is_active)
                     dispatchRawMessage(msg->str, remote_addr);
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
                 RecordWsCallbackPerf(
                     true,
                     msg->type,
@@ -698,7 +710,7 @@ void SignalingChannel::attachServerCallbacks(
                         ws->close(ix::WebSocketCloseConstants::kNormalClosureCode,
                                   kSingleSlaveReason);
                     }
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
                     RecordWsCallbackPerf(
                         true,
                         msg->type,
@@ -749,7 +761,7 @@ void SignalingChannel::attachServerCallbacks(
                         cb(false, msg->errorInfo.reason);
                 }
             }
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_PERF)
             RecordWsCallbackPerf(
                 true,
                 msg->type,

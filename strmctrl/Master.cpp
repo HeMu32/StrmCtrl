@@ -1,6 +1,7 @@
 #include "Master.h"
 
 #include <iostream>
+#include <sstream>
 #include <thread>
 
 namespace strmctrl
@@ -8,6 +9,15 @@ namespace strmctrl
 
 namespace
 {
+
+void LogStrmCtrlMasterLifecycleText(const std::string& sMsg)
+{
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+    std::cerr << sMsg << std::endl;
+#else
+    (void)sMsg;
+#endif
+}
 
 std::shared_ptr<SignalingChannel> toShared(std::unique_ptr<SignalingChannel> signaling)
 {
@@ -38,11 +48,12 @@ void DisposeMasterSignalingAsync(std::shared_ptr<SignalingChannel> signaling)
     std::thread(
         [signaling = std::move(signaling)]() mutable
         {
-#if defined(_DEBUG)
-            std::cerr << "[Lifecycle][strmctrl::Master] async signaling dispose"
-                      << " signaling=" << signaling.get()
-                      << " thread=" << std::this_thread::get_id()
-                      << std::endl;
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+            std::ostringstream oss;
+            oss << "[Lifecycle][strmctrl::Master] async signaling dispose"
+                << " signaling=" << signaling.get()
+                << " thread=" << std::this_thread::get_id();
+            LogStrmCtrlMasterLifecycleText(oss.str());
 #endif
             signaling->stop();
         }).detach();
@@ -283,12 +294,13 @@ void Master::pushAudioFrame(const AudioFrame &frame)
 
 void Master::onSlaveConnected(const std::string &info)
 {
-#if defined(_DEBUG)
-    std::cerr << "[Lifecycle][strmctrl::Master] onSlaveConnected"
-              << " this=" << this
-              << " thread=" << std::this_thread::get_id()
-              << " info=" << info
-              << std::endl;
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+    std::ostringstream oss;
+    oss << "[Lifecycle][strmctrl::Master] onSlaveConnected"
+        << " this=" << this
+        << " thread=" << std::this_thread::get_id()
+        << " info=" << info;
+    LogStrmCtrlMasterLifecycleText(oss.str());
 #endif
     auto sender_state = std::shared_ptr<SenderState>();
     {
@@ -309,11 +321,12 @@ void Master::onSlaveConnected(const std::string &info)
 
 void Master::onSlaveDisconnected()
 {
-#if defined(_DEBUG)
-    std::cerr << "[Lifecycle][strmctrl::Master] onSlaveDisconnected"
-              << " this=" << this
-              << " thread=" << std::this_thread::get_id()
-              << std::endl;
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+    std::ostringstream oss;
+    oss << "[Lifecycle][strmctrl::Master] onSlaveDisconnected"
+        << " this=" << this
+        << " thread=" << std::this_thread::get_id();
+    LogStrmCtrlMasterLifecycleText(oss.str());
 #endif
     auto sender_state = std::shared_ptr<SenderState>();
     {

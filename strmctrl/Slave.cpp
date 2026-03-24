@@ -1,6 +1,7 @@
 #include "Slave.h"
 
 #include <iostream>
+#include <sstream>
 #include <thread>
 
 namespace strmctrl
@@ -16,7 +17,7 @@ std::shared_ptr<SignalingChannel> toShared(std::unique_ptr<SignalingChannel> sig
 
 void LogStrmCtrlSlaveLifecycle(const char* pszStage, const Slave* pSelf)
 {
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
     std::cerr << "[Lifecycle][strmctrl::Slave] " << pszStage
               << " this=" << pSelf
               << " thread=" << std::this_thread::get_id()
@@ -24,6 +25,15 @@ void LogStrmCtrlSlaveLifecycle(const char* pszStage, const Slave* pSelf)
 #else
     (void)pszStage;
     (void)pSelf;
+#endif
+}
+
+void LogStrmCtrlSlaveLifecycleText(const std::string& sMsg)
+{
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+    std::cerr << sMsg << std::endl;
+#else
+    (void)sMsg;
 #endif
 }
 
@@ -35,11 +45,12 @@ void DisposeSignalingOffCallbackThread(std::shared_ptr<SignalingChannel> signali
     std::thread(
         [signaling = std::move(signaling)]() mutable
         {
-#if defined(_DEBUG)
-            std::cerr << "[Lifecycle][strmctrl::Slave] async signaling dispose"
-                      << " signaling=" << signaling.get()
-                      << " thread=" << std::this_thread::get_id()
-                      << std::endl;
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+            std::ostringstream oss;
+            oss << "[Lifecycle][strmctrl::Slave] async signaling dispose"
+                << " signaling=" << signaling.get()
+                << " thread=" << std::this_thread::get_id();
+            LogStrmCtrlSlaveLifecycleText(oss.str());
 #endif
             signaling->stop();
         }).detach();
