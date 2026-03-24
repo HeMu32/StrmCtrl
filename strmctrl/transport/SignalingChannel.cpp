@@ -1,6 +1,8 @@
 #include "SignalingChannel.h"
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <thread>
 
@@ -14,6 +16,181 @@ namespace
 // surfaced quickly. A short heartbeat keeps the WebSocket state fresh without
 // relying on slow TCP half-open detection.
 constexpr int kSignalingHeartbeatIntervalSecs = 3;
+
+#if defined(_DEBUG)
+constexpr std::uint64_t kPerfLogEveryNMessages = 500;
+
+enum class EDispatchBranch : std::uint8_t
+{
+    Msg = 0,
+    Sdp,
+    VideoCfg,
+    Ready,
+    Prefix,
+    Unknown
+};
+
+struct TSignalingPerfCounters
+{
+    std::atomic<std::uint64_t> nWsTotal{0};
+    std::atomic<std::uint64_t> nWsMsg{0};
+    std::atomic<std::uint64_t> nWsOpen{0};
+    std::atomic<std::uint64_t> nWsClose{0};
+    std::atomic<std::uint64_t> nWsError{0};
+    std::atomic<std::uint64_t> nWsOther{0};
+    std::atomic<std::uint64_t> nWsCbTotalUs{0};
+    std::atomic<std::uint64_t> nWsCbMaxUs{0};
+
+    std::atomic<std::uint64_t> nDispatchTotal{0};
+    std::atomic<std::uint64_t> nDispatchMsg{0};
+    std::atomic<std::uint64_t> nDispatchSdp{0};
+    std::atomic<std::uint64_t> nDispatchVideoCfg{0};
+    std::atomic<std::uint64_t> nDispatchReady{0};
+    std::atomic<std::uint64_t> nDispatchPrefix{0};
+    std::atomic<std::uint64_t> nDispatchUnknown{0};
+    std::atomic<std::uint64_t> nDispatchTotalUs{0};
+    std::atomic<std::uint64_t> nDispatchMaxUs{0};
+
+    std::atomic<std::uint64_t> nDispatchLockWaitTotalUs{0};
+    std::atomic<std::uint64_t> nDispatchLockWaitMaxUs{0};
+};
+
+TSignalingPerfCounters g_stClientPerf;
+TSignalingPerfCounters g_stServerPerf;
+
+void UpdateMaxAtomic(std::atomic<std::uint64_t>& stMax, std::uint64_t uiVal)
+{
+    std::uint64_t uiCur = stMax.load(std::memory_order_relaxed);
+    while (uiVal > uiCur && !stMax.compare_exchange_weak(uiCur, uiVal, std::memory_order_relaxed))
+    {
+    }
+}
+
+TSignalingPerfCounters& SelectPerfCounters(bool bIsServer)
+{
+    return bIsServer ? g_stServerPerf : g_stClientPerf;
+}
+
+std::uint64_t ToUs(const std::chrono::steady_clock::duration& stDur)
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(stDur).count());
+}
+
+void LogSignalingPerfSnapshot(const char* pszRole, const TSignalingPerfCounters& stPerf)
+{
+    const std::uint64_t nWsTotal = stPerf.nWsTotal.load(std::memory_order_relaxed);
+    const std::uint64_t nWsCbTotalUs = stPerf.nWsCbTotalUs.load(std::memory_order_relaxed);
+    const std::uint64_t nDispatchTotal = stPerf.nDispatchTotal.load(std::memory_order_relaxed);
+    const std::uint64_t nDispatchTotalUs = stPerf.nDispatchTotalUs.load(std::memory_order_relaxed);
+
+    std::cerr << "[Perf][SignalingChannel][" << pszRole << "]"
+              << " wsTotal=" << nWsTotal
+              << " wsMsg=" << stPerf.nWsMsg.load(std::memory_order_relaxed)
+              << " wsOpen=" << stPerf.nWsOpen.load(std::memory_order_relaxed)
+              << " wsClose=" << stPerf.nWsClose.load(std::memory_order_relaxed)
+              << " wsError=" << stPerf.nWsError.load(std::memory_order_relaxed)
+              << " wsOther=" << stPerf.nWsOther.load(std::memory_order_relaxed)
+              << " wsCbAvgUs=" << (nWsTotal == 0 ? 0 : (nWsCbTotalUs / nWsTotal))
+              << " wsCbMaxUs=" << stPerf.nWsCbMaxUs.load(std::memory_order_relaxed)
+              << " dispatchTotal=" << nDispatchTotal
+              << " dispatchMsg=" << stPerf.nDispatchMsg.load(std::memory_order_relaxed)
+              << " dispatchSdp=" << stPerf.nDispatchSdp.load(std::memory_order_relaxed)
+              << " dispatchVideoCfg=" << stPerf.nDispatchVideoCfg.load(std::memory_order_relaxed)
+              << " dispatchReady=" << stPerf.nDispatchReady.load(std::memory_order_relaxed)
+              << " dispatchPrefix=" << stPerf.nDispatchPrefix.load(std::memory_order_relaxed)
+              << " dispatchUnknown=" << stPerf.nDispatchUnknown.load(std::memory_order_relaxed)
+              << " dispatchAvgUs=" << (nDispatchTotal == 0 ? 0 : (nDispatchTotalUs / nDispatchTotal))
+              << " dispatchMaxUs=" << stPerf.nDispatchMaxUs.load(std::memory_order_relaxed)
+              << " lockWaitAvgUs=" << (nDispatchTotal == 0 ? 0 : (stPerf.nDispatchLockWaitTotalUs.load(std::memory_order_relaxed) / nDispatchTotal))
+              << " lockWaitMaxUs=" << stPerf.nDispatchLockWaitMaxUs.load(std::memory_order_relaxed)
+              << std::endl;
+}
+
+void FlushSignalingPerfIfNeeded(bool bIsServer)
+{
+    auto& stPerf = SelectPerfCounters(bIsServer);
+    const std::uint64_t nWsTotal = stPerf.nWsTotal.load(std::memory_order_relaxed);
+    if (nWsTotal == 0 || (nWsTotal % kPerfLogEveryNMessages) == 0)
+    {
+        return;
+    }
+
+    LogSignalingPerfSnapshot(bIsServer ? "server" : "client", stPerf);
+}
+
+void RecordWsCallbackPerf(bool bIsServer,
+                          ix::WebSocketMessageType eType,
+                          std::uint64_t uiCbUs)
+{
+    auto& stPerf = SelectPerfCounters(bIsServer);
+    const std::uint64_t nTotal = stPerf.nWsTotal.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    switch (eType)
+    {
+    case ix::WebSocketMessageType::Message:
+        stPerf.nWsMsg.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case ix::WebSocketMessageType::Open:
+        stPerf.nWsOpen.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case ix::WebSocketMessageType::Close:
+        stPerf.nWsClose.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case ix::WebSocketMessageType::Error:
+        stPerf.nWsError.fetch_add(1, std::memory_order_relaxed);
+        break;
+    default:
+        stPerf.nWsOther.fetch_add(1, std::memory_order_relaxed);
+        break;
+    }
+
+    stPerf.nWsCbTotalUs.fetch_add(uiCbUs, std::memory_order_relaxed);
+    UpdateMaxAtomic(stPerf.nWsCbMaxUs, uiCbUs);
+
+    if ((nTotal % kPerfLogEveryNMessages) == 0)
+    {
+        LogSignalingPerfSnapshot(bIsServer ? "server" : "client", stPerf);
+    }
+}
+
+void RecordDispatchPerf(bool bIsServer,
+                        EDispatchBranch eBranch,
+                        std::uint64_t uiDispatchUs,
+                        std::uint64_t uiLockWaitUs)
+{
+    auto& stPerf = SelectPerfCounters(bIsServer);
+    stPerf.nDispatchTotal.fetch_add(1, std::memory_order_relaxed);
+
+    switch (eBranch)
+    {
+    case EDispatchBranch::Msg:
+        stPerf.nDispatchMsg.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case EDispatchBranch::Sdp:
+        stPerf.nDispatchSdp.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case EDispatchBranch::VideoCfg:
+        stPerf.nDispatchVideoCfg.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case EDispatchBranch::Ready:
+        stPerf.nDispatchReady.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case EDispatchBranch::Prefix:
+        stPerf.nDispatchPrefix.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case EDispatchBranch::Unknown:
+    default:
+        stPerf.nDispatchUnknown.fetch_add(1, std::memory_order_relaxed);
+        break;
+    }
+
+    stPerf.nDispatchTotalUs.fetch_add(uiDispatchUs, std::memory_order_relaxed);
+    stPerf.nDispatchLockWaitTotalUs.fetch_add(uiLockWaitUs, std::memory_order_relaxed);
+    UpdateMaxAtomic(stPerf.nDispatchMaxUs, uiDispatchUs);
+    UpdateMaxAtomic(stPerf.nDispatchLockWaitMaxUs, uiLockWaitUs);
+}
+#endif
 
 } // namespace
 
@@ -157,13 +334,18 @@ bool SignalingChannel::start()
     client_->setOnMessageCallback(
         [this](const ix::WebSocketMessagePtr &msg)
         {
+#if defined(_DEBUG)
+            const auto tpCbBegin = std::chrono::steady_clock::now();
+#endif
             using T = ix::WebSocketMessageType;
 #if defined(_DEBUG)
+/*
             std::cerr << "[Lifecycle][SignalingChannel] client message"
                       << " this=" << this
                       << " thread=" << std::this_thread::get_id()
                       << " type=" << static_cast<int>(msg->type)
                       << std::endl;
+*/
 #endif
             if (msg->type == T::Message)
             {
@@ -201,6 +383,12 @@ bool SignalingChannel::start()
                 if (cb)
                     cb(false, msg->errorInfo.reason);
             }
+#if defined(_DEBUG)
+            RecordWsCallbackPerf(
+                false,
+                msg->type,
+                ToUs(std::chrono::steady_clock::now() - tpCbBegin));
+#endif
         });
 
     client_->start();
@@ -223,6 +411,10 @@ void SignalingChannel::stop()
     {
         client_->stop();
     }
+
+#if defined(_DEBUG)
+    FlushSignalingPerfIfNeeded(is_server_);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +476,10 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
 {
     using namespace std::chrono;
 
+#if defined(_DEBUG)
+    const auto tpDispatchBegin = std::chrono::steady_clock::now();
+#endif
+
     MessageCallback msg_cb;
     std::function<void(const std::string &)> sdp_cb;
     std::function<void(const std::string &)> video_cfg_cb;
@@ -291,8 +487,15 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     PrefixCallback matched_cb;
     std::string matched_prefix;
 
+    std::uint64_t uiLockWaitUs = 0;
     {
+#if defined(_DEBUG)
+        const auto tpLockBegin = std::chrono::steady_clock::now();
+#endif
         std::lock_guard<std::mutex> lock(callback_mutex_);
+#if defined(_DEBUG)
+        uiLockWaitUs = ToUs(std::chrono::steady_clock::now() - tpLockBegin);
+#endif
         if (raw.rfind(kMsgPrefix, 0) == 0)
         {
             msg_cb = msg_cb_;
@@ -333,6 +536,13 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
                               system_clock::now().time_since_epoch())
                               .count();
         msg_cb(tm);
+#if defined(_DEBUG)
+        RecordDispatchPerf(
+            is_server_,
+            EDispatchBranch::Msg,
+            ToUs(std::chrono::steady_clock::now() - tpDispatchBegin),
+            uiLockWaitUs);
+#endif
         return;
     }
 
@@ -340,12 +550,26 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     {
         // 内部 SDP 帧
         sdp_cb(raw.substr(std::string(kSdpPrefix).size()));
+#if defined(_DEBUG)
+        RecordDispatchPerf(
+            is_server_,
+            EDispatchBranch::Sdp,
+            ToUs(std::chrono::steady_clock::now() - tpDispatchBegin),
+            uiLockWaitUs);
+#endif
         return;
     }
 
     if (video_cfg_cb)
     {
         video_cfg_cb(raw.substr(std::string(kVideoCfgPrefix).size()));
+#if defined(_DEBUG)
+        RecordDispatchPerf(
+            is_server_,
+            EDispatchBranch::VideoCfg,
+            ToUs(std::chrono::steady_clock::now() - tpDispatchBegin),
+            uiLockWaitUs);
+#endif
         return;
     }
 
@@ -353,18 +577,39 @@ void SignalingChannel::dispatchRawMessage(const std::string &raw,
     {
         // 从端 RTP 接收端就绪通知
         ready_cb();
+#if defined(_DEBUG)
+        RecordDispatchPerf(
+            is_server_,
+            EDispatchBranch::Ready,
+            ToUs(std::chrono::steady_clock::now() - tpDispatchBegin),
+            uiLockWaitUs);
+#endif
         return;
     }
 
     if (matched_cb)
     {
         matched_cb(raw.substr(matched_prefix.size()), sender_id);
+#if defined(_DEBUG)
+        RecordDispatchPerf(
+            is_server_,
+            EDispatchBranch::Prefix,
+            ToUs(std::chrono::steady_clock::now() - tpDispatchBegin),
+            uiLockWaitUs);
+#endif
         return;
     }
 
     // 未知格式，忽略并打印警告
     std::cerr << "[SignalingChannel] Unknown message prefix, ignoring. "
               << "raw=" << raw.substr(0, 64) << "\n";
+#if defined(_DEBUG)
+    RecordDispatchPerf(
+        is_server_,
+        EDispatchBranch::Unknown,
+        ToUs(std::chrono::steady_clock::now() - tpDispatchBegin),
+        uiLockWaitUs);
+#endif
 }
 
 void SignalingChannel::attachServerCallbacks(
@@ -413,6 +658,9 @@ void SignalingChannel::attachServerCallbacks(
     ws->setOnMessageCallback(
         [this, weakWs, remote_addr, client_id](const ix::WebSocketMessagePtr &msg)
         {
+#if defined(_DEBUG)
+            const auto tpCbBegin = std::chrono::steady_clock::now();
+#endif
             using T = ix::WebSocketMessageType;
             if (msg->type == T::Message)
             {
@@ -423,6 +671,12 @@ void SignalingChannel::attachServerCallbacks(
                 }
                 if (is_active)
                     dispatchRawMessage(msg->str, remote_addr);
+#if defined(_DEBUG)
+                RecordWsCallbackPerf(
+                    true,
+                    msg->type,
+                    ToUs(std::chrono::steady_clock::now() - tpCbBegin));
+#endif
                 return;
             }
             else if (msg->type == T::Open)
@@ -444,6 +698,12 @@ void SignalingChannel::attachServerCallbacks(
                         ws->close(ix::WebSocketCloseConstants::kNormalClosureCode,
                                   kSingleSlaveReason);
                     }
+#if defined(_DEBUG)
+                    RecordWsCallbackPerf(
+                        true,
+                        msg->type,
+                        ToUs(std::chrono::steady_clock::now() - tpCbBegin));
+#endif
                     return;
                 }
 
@@ -489,6 +749,12 @@ void SignalingChannel::attachServerCallbacks(
                         cb(false, msg->errorInfo.reason);
                 }
             }
+#if defined(_DEBUG)
+            RecordWsCallbackPerf(
+                true,
+                msg->type,
+                ToUs(std::chrono::steady_clock::now() - tpCbBegin));
+#endif
         });
 }
 
