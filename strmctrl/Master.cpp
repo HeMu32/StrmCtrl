@@ -1,6 +1,7 @@
 #include "Master.h"
 
 #include <iostream>
+#include <thread>
 
 namespace strmctrl
 {
@@ -27,6 +28,24 @@ std::string parseRemoteIp(const std::string &info)
     // IPv4: "127.0.0.1:52390" -> "127.0.0.1"
     const auto colon = info.rfind(':');
     return (colon != std::string::npos) ? info.substr(0, colon) : info;
+}
+
+void DisposeMasterSignalingAsync(std::shared_ptr<SignalingChannel> signaling)
+{
+    if (!signaling)
+        return;
+
+    std::thread(
+        [signaling = std::move(signaling)]() mutable
+        {
+#if defined(_DEBUG)
+            std::cerr << "[Lifecycle][strmctrl::Master] async signaling dispose"
+                      << " signaling=" << signaling.get()
+                      << " thread=" << std::this_thread::get_id()
+                      << std::endl;
+#endif
+            signaling->stop();
+        }).detach();
 }
 
 } // namespace
@@ -217,7 +236,7 @@ void Master::stop()
         signaling->setConnectionCallback(nullptr);
         signaling->setSdpCallback(nullptr);
         signaling->setReadyCallback(nullptr);
-        signaling->stop();
+        DisposeMasterSignalingAsync(std::move(signaling));
     }
 }
 
@@ -264,6 +283,13 @@ void Master::pushAudioFrame(const AudioFrame &frame)
 
 void Master::onSlaveConnected(const std::string &info)
 {
+#if defined(_DEBUG)
+    std::cerr << "[Lifecycle][strmctrl::Master] onSlaveConnected"
+              << " this=" << this
+              << " thread=" << std::this_thread::get_id()
+              << " info=" << info
+              << std::endl;
+#endif
     auto sender_state = std::shared_ptr<SenderState>();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -283,6 +309,12 @@ void Master::onSlaveConnected(const std::string &info)
 
 void Master::onSlaveDisconnected()
 {
+#if defined(_DEBUG)
+    std::cerr << "[Lifecycle][strmctrl::Master] onSlaveDisconnected"
+              << " this=" << this
+              << " thread=" << std::this_thread::get_id()
+              << std::endl;
+#endif
     auto sender_state = std::shared_ptr<SenderState>();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
