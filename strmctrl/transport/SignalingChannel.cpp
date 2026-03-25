@@ -108,12 +108,26 @@ void LogSignalingPerfSnapshot(const char* pszRole, const TSignalingPerfCounters&
               << std::endl;
 }
 
-void LogSignalingLifecycleText(const std::string& sMsg)
+void LogSignalingLifecycleEvent(const char* pszEvent,
+                                const SignalingChannel* pSelf,
+                                const char* pszDetailKey = nullptr,
+                                const std::string& sDetail = std::string())
 {
 #if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
-    std::cerr << sMsg << std::endl;
+    std::ostringstream oss;
+    oss << "[Lifecycle][SignalingChannel] " << pszEvent
+        << " this=" << pSelf
+        << " thread=" << std::this_thread::get_id();
+    if (pszDetailKey != nullptr && !sDetail.empty())
+    {
+        oss << ' ' << pszDetailKey << '=' << sDetail;
+    }
+    std::cerr << oss.str() << std::endl;
 #else
-    (void)sMsg;
+    (void)pszEvent;
+    (void)pSelf;
+    (void)pszDetailKey;
+    (void)sDetail;
 #endif
 }
 
@@ -370,12 +384,7 @@ bool SignalingChannel::start()
             else if (msg->type == T::Close)
             {
 #if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
-                std::ostringstream oss;
-                oss << "[Lifecycle][SignalingChannel] client close"
-                    << " this=" << this
-                    << " thread=" << std::this_thread::get_id()
-                    << " reason=" << msg->closeInfo.reason;
-                LogSignalingLifecycleText(oss.str());
+                LogSignalingLifecycleEvent("client close", this, "reason", msg->closeInfo.reason);
 #endif
                 auto cb = connectionCallbackCopy();
                 if (cb)
@@ -384,12 +393,7 @@ bool SignalingChannel::start()
             else if (msg->type == T::Error)
             {
 #if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
-                std::ostringstream oss;
-                oss << "[Lifecycle][SignalingChannel] client error"
-                    << " this=" << this
-                    << " thread=" << std::this_thread::get_id()
-                    << " reason=" << msg->errorInfo.reason;
-                LogSignalingLifecycleText(oss.str());
+                LogSignalingLifecycleEvent("client error", this, "reason", msg->errorInfo.reason);
 #endif
                 auto cb = connectionCallbackCopy();
                 if (cb)
