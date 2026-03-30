@@ -23,6 +23,14 @@ static std::string avErrStrSend(int err)
     return std::string(buf);
 }
 
+#if defined(_DEBUG)
+#  define RTP_SENDER_DEBUG_MSG(x) do { std::cout << (x) << std::flush; } while (0)
+#  define RTP_SENDER_DEBUG_ERR(x) do { std::cerr << (x) << std::endl; } while (0)
+#else
+#  define RTP_SENDER_DEBUG_MSG(x) do { (void)(x); } while (0)
+#  define RTP_SENDER_DEBUG_ERR(x) do { (void)(x); } while (0)
+#endif
+
 // ---------------------------------------------------------------------------
 // 析构
 // ---------------------------------------------------------------------------
@@ -239,16 +247,16 @@ bool RtpSender::sendPacket(AVPacket *pkt, int stream_index)
     if (ret < 0)
     {
         last_error_ = "av_interleaved_write_frame: " + avErrStrSend(ret);
-        std::cerr << "[RtpSender] sendPacket failed stream=" << stream_index
-                    << " err=" << last_error_ << "\n";
+        RTP_SENDER_DEBUG_ERR("[RtpSender] sendPacket failed stream=" + std::to_string(stream_index)
+                            + " err=" + last_error_);
         return false;
     }
 
     ctx.pkt_index++;
     if (ctx.pkt_index % 100 == 1)
     {
-        std::cout << "[RtpSender] sent stream=" << stream_index
-                    << " packets=" << ctx.pkt_index << "\n";
+        RTP_SENDER_DEBUG_MSG("[RtpSender] sent stream=" + std::to_string(stream_index)
+                            + " packets=" + std::to_string(ctx.pkt_index) + "\n");
     }
     return true;
 }

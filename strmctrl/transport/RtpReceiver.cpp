@@ -31,6 +31,14 @@ std::string avErrStrRecv(int err)
     return std::string(buf);
 }
 
+#if defined(_DEBUG)
+#  define RTP_RECEIVER_DEBUG_MSG(x) do { std::cout << (x) << std::flush; } while (0)
+#  define RTP_RECEIVER_DEBUG_ERR(x) do { std::cerr << (x) << std::endl; } while (0)
+#else
+#  define RTP_RECEIVER_DEBUG_MSG(x) do { (void)(x); } while (0)
+#  define RTP_RECEIVER_DEBUG_ERR(x) do { (void)(x); } while (0)
+#endif
+
 std::string makeUniqueTempSdpPath()
 {
     std::error_code ec;
@@ -143,10 +151,8 @@ bool RtpReceiver::openWithSdp(const std::string &sdp)
         temp_sdp_path_ = sdp_path;
     }
 
-    std::cout << "[RtpReceiver] SDP written to: " << sdp_path << "\n"
-              << "--- SDP BEGIN ---\n"
-              << sdp << "\n--- SDP END ---\n"
-              << std::flush;
+    RTP_RECEIVER_DEBUG_MSG("[RtpReceiver] SDP written to: " + sdp_path + "\n"
+                  "--- SDP BEGIN ---\n" + sdp + "\n--- SDP END ---\n");
 
     return openWithUrl(sdp_path, -1);
 }
@@ -262,9 +268,8 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
     const int stream_info_ret = avformat_find_stream_info(fmt_ctx_, nullptr);
     if (stream_info_ret < 0)
     {
-        std::cerr << "[RtpReceiver] Warning: avformat_find_stream_info returned "
-                  << stream_info_ret << " (" << avErrStrRecv(stream_info_ret)
-                  << "). Continuing anyway.\n";
+RTP_RECEIVER_DEBUG_ERR("[RtpReceiver] Warning: avformat_find_stream_info returned " +
+                  std::to_string(stream_info_ret) + " (" + avErrStrRecv(stream_info_ret) + "). Continuing anyway.");
     }
 
     // 更新 interrupt callback 的超时。
@@ -292,7 +297,7 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
                 last_error_ = "VideoDecoder open failed: " + video_decoder_.lastError();
                 return false;
             }
-            std::cout << "[RtpReceiver] Found Video Stream: index=" << i << "\n";
+            RTP_RECEIVER_DEBUG_MSG("[RtpReceiver] Found Video Stream: index=" + std::to_string(i) + "\n");
         }
         else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_idx_ == -1)
         {
@@ -303,7 +308,7 @@ bool RtpReceiver::openWithUrl(const std::string &host, int port)
                 last_error_ = "AudioDecoder open failed: " + audio_decoder_.lastError();
                 return false;
             }
-            std::cout << "[RtpReceiver] Found Audio Stream: index=" << i << "\n";
+            RTP_RECEIVER_DEBUG_MSG("[RtpReceiver] Found Audio Stream: index=" + std::to_string(i) + "\n");
         }
     }
 
@@ -390,8 +395,7 @@ void RtpReceiver::workerThread()
             const auto now = std::chrono::steady_clock::now();
             if (now - last_packet_time > std::chrono::seconds(2))
             {
-                std::cout << "[RtpReceiver] idle: no packets for 2000ms. last_error="
-                          << avErrStrRecv(ret) << "\n";
+                RTP_RECEIVER_DEBUG_MSG("[RtpReceiver] idle: no packets for 2000ms. last_error=" + avErrStrRecv(ret) + "\n");
                 last_packet_time = now;
             }
 
@@ -399,8 +403,7 @@ void RtpReceiver::workerThread()
             {
                 if ((is_timeout || is_eof) && (++error_count % 50 == 1))
                 {
-                    std::cout << "[RtpReceiver] transient read error count=" << error_count
-                              << " last=" << avErrStrRecv(ret) << "\n";
+                    RTP_RECEIVER_DEBUG_MSG("[RtpReceiver] transient read error count=" + std::to_string(error_count) + " last=" + avErrStrRecv(ret) + "\n");
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
@@ -410,13 +413,12 @@ void RtpReceiver::workerThread()
             reportError("av_read_frame error: " + avErrStrRecv(ret));
             if (consecutive_errors % 10 == 1)
             {
-                std::cerr << "[RtpReceiver] av_read_frame error count="
-                          << consecutive_errors
-                          << " last=" << avErrStrRecv(ret) << "\n";
+                RTP_RECEIVER_DEBUG_ERR("[RtpReceiver] av_read_frame error count=" +
+                      std::to_string(consecutive_errors) + " last=" + avErrStrRecv(ret));
             }
             if (consecutive_errors > 50)
             {
-                std::cerr << "[RtpReceiver] too many consecutive errors, stopping worker thread.\n";
+                RTP_RECEIVER_DEBUG_ERR("[RtpReceiver] too many consecutive errors, stopping worker thread.");
                 break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -450,8 +452,7 @@ void RtpReceiver::workerThread()
 
         if ((video_packets + audio_packets) % 100 == 1)
         {
-            std::cout << "[RtpReceiver] packets v=" << video_packets
-                      << " a=" << audio_packets << "\n";
+            RTP_RECEIVER_DEBUG_MSG("[RtpReceiver] packets v=" + std::to_string(video_packets) + " a=" + std::to_string(audio_packets) + "\n");
         }
 
         av_packet_unref(pkt);
