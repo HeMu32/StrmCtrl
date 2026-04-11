@@ -107,29 +107,10 @@ void LogSignalingPerfSnapshot(const char* pszRole, const TSignalingPerfCounters&
               << " lockWaitMaxUs=" << stPerf.nDispatchLockWaitMaxUs.load(std::memory_order_relaxed)
               << std::endl;
 }
-
-void LogSignalingLifecycleEvent(const char* pszEvent,
-                                const SignalingChannel* pSelf,
-                                const char* pszDetailKey = nullptr,
-                                const std::string& sDetail = std::string())
-{
-#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
-    std::ostringstream oss;
-    oss << "[Lifecycle][SignalingChannel] " << pszEvent
-        << " this=" << pSelf
-        << " thread=" << std::this_thread::get_id();
-    if (pszDetailKey != nullptr && !sDetail.empty())
-    {
-        oss << ' ' << pszDetailKey << '=' << sDetail;
-    }
-    std::cerr << oss.str() << std::endl;
-#else
-    (void)pszEvent;
-    (void)pSelf;
-    (void)pszDetailKey;
-    (void)sDetail;
-#endif
 }
+
+namespace
+{
 
 void FlushSignalingPerfIfNeeded(bool bIsServer)
 {
@@ -215,6 +196,29 @@ void RecordDispatchPerf(bool bIsServer,
     UpdateMaxAtomic(stPerf.nDispatchLockWaitMaxUs, uiLockWaitUs);
 }
 #endif
+
+void LogSignalingLifecycleEvent(const char* pszEvent,
+                                const SignalingChannel* pSelf,
+                                const char* pszDetailKey /*= nullptr*/,
+                                const std::string& sDetail /*= std::string()*/)
+{
+#if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
+    std::ostringstream oss;
+    oss << "[Lifecycle][SignalingChannel] " << pszEvent
+        << " this=" << pSelf
+        << " thread=" << std::this_thread::get_id();
+    if (pszDetailKey != nullptr && !sDetail.empty())
+    {
+        oss << ' ' << pszDetailKey << '=' << sDetail;
+    }
+    std::cerr << oss.str() << std::endl;
+#else
+    (void)pszEvent;
+    (void)pSelf;
+    (void)pszDetailKey;
+    (void)sDetail;
+#endif
+}
 
 } // namespace
 
@@ -384,7 +388,7 @@ bool SignalingChannel::start()
             else if (msg->type == T::Close)
             {
 #if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
-                LogSignalingLifecycleEvent("client close", this, "reason", msg->closeInfo.reason);
+                ::strmctrl::LogSignalingLifecycleEvent("client close", this, "reason", msg->closeInfo.reason);
 #endif
                 auto cb = connectionCallbackCopy();
                 if (cb)
@@ -393,7 +397,7 @@ bool SignalingChannel::start()
             else if (msg->type == T::Error)
             {
 #if defined(_DEBUG) && defined(_DEBUG_LIFECYCLE)
-                LogSignalingLifecycleEvent("client error", this, "reason", msg->errorInfo.reason);
+                ::strmctrl::LogSignalingLifecycleEvent("client error", this, "reason", msg->errorInfo.reason);
 #endif
                 auto cb = connectionCallbackCopy();
                 if (cb)
