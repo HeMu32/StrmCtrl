@@ -1,35 +1,58 @@
-# StrmCtrl — minimal WebSocket demo + workspace helper files
+# StrmCtrl — WebSocket-signaled RTP streaming (Master / Slave)
 
-Short demo project that uses IXWebSocket (submodule in 3rdparty/) and demonstrates
-a master (server) / slave (client) pair. See `demo/` for examples and `.github/copilot-instructions.md`
-for contributor guidance.
+A C++17 streaming framework using **IXWebSocket** for signaling and **FFmpeg** (LGPL, bundled in `3rdparty/ffmpeg`) for encoding/decoding.  Master (server) and Slave (client) negotiate video/audio codec config over WebSocket, then stream RTP packets.
 
-Build (Windows / MinGW example):
+## Features
 
-  cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Debug
-  cmake --build build -j 4
+- WebSocket-based signaling (SDP handshake, bidirectional message exchange, custom prefixes)
+- Single-direction RTP video streaming (H.264 via OpenH264)
+- Single-direction RTP audio streaming (FFmpeg AAC/MP3 encoding)
+- Configurable resolution, bitrate, and frame rate (master-authoritative FPS, negotiated in handshake)
+- Custom message passing over the signaling channel
+- Disconnection tolerance — single-side failure without notification
+- Hierarchical debug / lifecycle logging
+- CTest-based test suite
 
-Editor (VS Code): run CMake configure once; the workspace includes `.vscode/` settings
-that point the language server to `build/compile_commands.json`.
+## Project structure
 
-Run:
-  build/demo/demo_master.exe
-  build/demo/demo_slave.exe
+| Path | Description |
+|------|-------------|
+| `strmctrl/` | Core library: `Master` / `Slave` classes, codec, transport, signaling |
+| `demo/` | Demo programs: `master`/`slave`, `decode_test`, `transcode_h264` |
+| `demo/stream_demo/` | Audio+video streaming demo (master + slave) |
+| `test/` | Unit & regression tests (CTest) |
+| `3rdparty/IXWebSocket/` | WebSocket library (git submodule) |
+| `3rdparty/ffmpeg/` | Pre-built FFmpeg shared libraries |
 
-The `stream_demo` applications also illustrate the new extensible messaging: type `gimb <text>` in either master or slave console to send a custom-prefixed `gimb:` frame, which the receiver prints.
+## Build (Windows / MinGW)
 
-> **Network initialization**: StrmCtrl uses IXWebSocket internally for signaling. 
-> Applications (including the provided demos and any shim-based host) must call 
-> `ix::initNetSystem()` once at startup and `ix::uninitNetSystem()` before exit. 
-> These global calls are not performed automatically by the library in order to 
-> avoid hidden side‑effects and to give the host control over the networking 
-> lifecycle.
+```sh
+cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j 4
+```
 
-> **Current signaling scope**: one `Master` supports one active `Slave` at a
-> time. A second slave connection is closed explicitly instead of sharing the
-> same RTP/signaling state.
+## Run
 
-> **Message delivery semantics**: text and prefix signaling are best-effort.
-> A successful send return value means the local IXWebSocket transport accepted
-> the frame; it is not a remote ACK.
+```sh
+# Terminal 1 — start master (signaling on port 11451, RTP on 11452)
+build/demo/demo_master.exe
 
+# Terminal 2 — start slave
+build/demo/demo_slave.exe
+
+# Stream demo (audio + video)
+build/demo/stream_demo/stream_master.exe
+build/demo/stream_demo/stream_slave.exe
+```
+
+## Run tests
+
+```sh
+cd build && ctest --output-on-failure
+```
+
+## Editor
+
+VS Code workspace includes `.vscode/` settings that point the language server to `build/compile_commands.json`.  Run CMake configure once first.
+
+See `.github/copilot-instructions.md` for contributor guidance and architecture notes.
