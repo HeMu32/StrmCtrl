@@ -6,16 +6,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(STRMCTRL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
-if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
-    set(STRMCTRL_BUILD_DEMOS_DEFAULT ON)
-    set(STRMCTRL_BUILD_TESTS_DEFAULT ON)
+# --- Standalone detection & shared utilities ---
+if(DEFINED RSCA_DEFAULTS_CMAKE AND EXISTS "${RSCA_DEFAULTS_CMAKE}")
+    include("${RSCA_DEFAULTS_CMAKE}")
 else()
-    set(STRMCTRL_BUILD_DEMOS_DEFAULT OFF)
-    set(STRMCTRL_BUILD_TESTS_DEFAULT OFF)
+    set(RSCA_IS_SUBPROJECT OFF)
+    function(rsca_project_option VAR DESCRIPTION)
+        option(${VAR} "${DESCRIPTION}" ON)
+    endfunction()
+    macro(rsca_project_local_config)
+        include(${CMAKE_CURRENT_SOURCE_DIR}/local_config.cmake OPTIONAL)
+    endmacro()
 endif()
 
-option(STRMCTRL_BUILD_DEMOS "Build StrmCtrl demo programs" ${STRMCTRL_BUILD_DEMOS_DEFAULT})
-option(STRMCTRL_BUILD_TESTS "Build StrmCtrl tests" ${STRMCTRL_BUILD_TESTS_DEFAULT})
+rsca_project_option(STRMCTRL_BUILD_DEMOS "Build StrmCtrl demo programs")
+rsca_project_option(STRMCTRL_BUILD_TESTS "Build StrmCtrl tests")
 
 # Export compile_commands.json for IDEs (helps clangd / VS Code C/C++ tools)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
